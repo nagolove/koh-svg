@@ -5,6 +5,7 @@
 // includes {{{
 #include "cimgui.h"
 #include "koh_common.h"
+#include "koh_resource.h"
 #include "koh_hotkey.h"
 #include "koh_stages.h"
 #include "raylib.h"
@@ -20,6 +21,8 @@ typedef struct Stage_shot {
     Camera2D          cam;
     FilesSearchSetup  fssetup;
     FilesSearchResult fsr;
+    Resource          res_list;
+    ResourceAsyncLoader *loader;
 } Stage_shot;
 
 static void stage_shot_init(struct Stage_shot *st) {
@@ -30,9 +33,13 @@ static void stage_shot_init(struct Stage_shot *st) {
     st->fssetup.path = "/home/nagolove/shots/";
     st->fssetup.regex_pattern = ".*\\.png$";
     st->fsr = koh_search_files(&st->fssetup);
+
+    st->loader = res_async_loader_new(NULL);
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
+    res_async_loader_pump(st->loader, &st->res_list);
+
     koh_camera_process_mouse_drag(&(struct CameraProcessDrag) {
             .mouse_btn = MOUSE_BUTTON_RIGHT,
             .cam = &st->cam
@@ -80,7 +87,6 @@ static void stage_shot_gui(struct Stage_shot *st) {
                         st->images_selected[j] = false;
 
                 st->last_selected = LAST_SELECTED_IMAGE;
-                /*
                 trace("gui_images_table: trash_menu\n");
                 //if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
                     //igOpenPopup_Str("trash_menu", ImGuiPopupFlags_MouseButtonRight);
@@ -100,7 +106,6 @@ static void stage_shot_gui(struct Stage_shot *st) {
                     }
                     igEndPopup();
                 }
-                */
 
             }
 
@@ -127,6 +132,7 @@ static void stage_shot_draw(struct Stage_shot *st) {
 static void stage_shot_shutdown(struct Stage_shot *st) {
     trace("stage_shot_shutdown:\n");
     koh_search_files_shutdown(&st->fsr);
+    res_async_loader_free(st->loader);
 }
 
 Stage *stage_shot_new(HotkeyStorage *hk_store) {
