@@ -33,11 +33,16 @@ typedef struct Stage_shot {
     de_ecs            *r;
     Texture2D         tex_example;
     Resource          res_list;
+    de_entity         borders[4];
+    uint32_t          borders_num;
     // }}}
 } Stage_shot;
 
+static bool world_query_AABB = true;
 static bool draw_sensors = false,
             verbose = false;
+
+static int borders_gap_px = 0;
 
 static bool query_world_draw(b2ShapeId shape_id, void* context) {
     //trace("query_world_draw:\n");
@@ -72,26 +77,42 @@ static bool query_world_draw(b2ShapeId shape_id, void* context) {
     return true;
 }
 
+struct CreatorCtx {
+    b2Vec2      last;
+    bool        last_used;
+    Stage_shot  *st;
+};
+
 static void body_creator(float x, float y, void *udata) {
-    Stage_shot *st = udata;
-    b2WorldId wid = st->wctx.world;
+    struct CreatorCtx *ctx = udata;
+    WorldCtx *wctx = &ctx->st->wctx;
+    Stage_shot *st = ctx->st;
     trace("body_creator:\n");
 
+    if (ctx->last_used) {
+        spawn_segment(
+            wctx,
+            &(struct SegmentSetup) {
+                .start = ctx->last,
+                .end = (b2Vec2) { x, y },
+                //.color = pallete_get_random32(&st->pallete, st->wctx.xrng),
+                .color = RED,
+                .r = st->r,
+        });
+    } else {
+        ctx->last_used = true;
+    }
 
-    spawn_segment(
-        &st->wctx,
-        &(struct SegmentSetup) {
-            .start = (b2Vec2){ 0., 0. },
-            .end = (b2Vec2){ st->wctx.width, st->wctx.height}, 
-            //.color = pallete_get_random32(&st->pallete, st->wctx.xrng),
-            .color = RED,
-            .r = st->r,
-    });
-
+    ctx->last.x = x;
+    ctx->last.y = y;
 }
 
 static void stage_shot_init(struct Stage_shot *st) {
     trace("stage_shot_init:\n");
+
+    Resource *rl = &st->res_list;
+    st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
+
     st->cam.zoom = 1.;
     st->r = de_ecs_make();
 
@@ -115,7 +136,10 @@ static void stage_shot_init(struct Stage_shot *st) {
 
     }, &st->wctx);
 
-    svg_parse(st->nsvg_img, body_creator, st);
+    svg_parse(st->nsvg_img, body_creator, &(struct CreatorCtx) {
+        .last_used = false,
+        .st = st,
+    });
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
@@ -214,21 +238,23 @@ static void box2d_actions_gui(struct Stage_shot *st) {
         }, num, NULL);
     }
 
+    /*
     if (igButton("delete all dymanic bodies", (ImVec2){})) {
         if (delete_all_bodies(st, b2_dynamicBody, b2_nullShapeId
             )) {
             //st->shape_hightlight = b2_nullShapeId;
         }
     }
+    */
 
+    /*
     igSameLine(0., 5.);
-
     if (igButton("delete all static bodies", (ImVec2){})) {
         if (delete_all_bodies(st, b2_staticBody, b2_nullShapeId)) {
             //st->shape_hightlight = b2_nullShapeId;
         }
     }
-
+    */
 
     if (igButton("spawn borders", (ImVec2){})) {
         remove_borders(&st->wctx, st->r, st->borders);
@@ -252,18 +278,14 @@ static void box2d_actions_gui(struct Stage_shot *st) {
 
     igSameLine(0., 5.);
 
-    if (igButton("reset hero", (ImVec2){})) {
-        hero_destroy(st->r, &st->e_hero);
-        st->e_hero = hero_create(&st->wctx, st->r);
-    }
-
     if (igButton("place some segments", (ImVec2){})) {
         spawn_segment(
             &st->wctx,
             &(struct SegmentSetup) {
                 .start = (b2Vec2){ 0., 0. },
                 .end = (b2Vec2){ st->wctx.width, st->wctx.height}, 
-                .color = pallete_get_random32(&st->pallete, st->wctx.xrng),
+                //.color = pallete_get_random32(&st->pallete, st->wctx.xrng),
+                .color = BROWN,
                 .r = st->r,
         });
         spawn_segment(
@@ -273,11 +295,13 @@ static void box2d_actions_gui(struct Stage_shot *st) {
                     GetScreenWidth() / 2., GetScreenHeight() / 2.
                 },
                 .end = (b2Vec2){ st->wctx.width, st->wctx.height}, 
-                .color = pallete_get_random32(&st->pallete, st->wctx.xrng),
+                //.color = pallete_get_random32(&st->pallete, st->wctx.xrng),
+                .color = BROWN,
                 .r = st->r,
         });
     }
 
+    /*
     igCheckbox("draw bodies positions", &st->use_bodies_pos_drawer);
     igSliderFloat(
         "position center radius", &st->bodies_pos_drawer.radius,
@@ -286,6 +310,7 @@ static void box2d_actions_gui(struct Stage_shot *st) {
 
     Color color = gui_color_combo(&st->bodies_drawer_color_combo, NULL);
     st->bodies_pos_drawer.color = color;
+    */
 
     igEnd();
 }
@@ -293,6 +318,7 @@ static void box2d_actions_gui(struct Stage_shot *st) {
 static void stage_shot_gui(struct Stage_shot *st) {
     assert(st);
     box2d_gui(&st->wctx);
+    box2d_actions_gui(st);
 }
 
 static void stage_shot_enter(struct Stage_shot *st) {
@@ -417,6 +443,10 @@ static void pass_box2d(Stage_shot *st) {
 }
 
 static void pass_svg(Stage_shot *st) {
+	NSVGshape *shape;
+	NSVGpath  *path;
+    NSVGimage *img = st->nsvg_img;
+
     Vector2 points[1024] = {};
     int points_cap = sizeof(points) / sizeof(points[0]);
     int points_num = 0;
@@ -446,10 +476,6 @@ for (int i = 0; i + 1 < points_num; i++) {
 }
 
 static void stage_shot_draw(Stage_shot *st) {
-	NSVGshape *shape;
-	NSVGpath  *path;
-    NSVGimage *img = st->nsvg_img;
-
     BeginMode2D(st->cam);
 
     pass_svg(st);
@@ -463,6 +489,7 @@ static void stage_shot_shutdown(struct Stage_shot *st) {
     nsvgDelete(st->nsvg_img);
     de_ecs_destroy(st->r);
     world_shutdown(&st->wctx);
+    res_unload_all(&st->res_list);
 }
 
 Stage *stage_shot_new(HotkeyStorage *hk_store) {
