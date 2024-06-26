@@ -436,7 +436,7 @@ int main(int argc, char **argv) {
     // вызывается как можно раньше после запуска программы
     //check_dotool();
 
-    const char *wnd_name = "proekt80";
+    const char *wnd_name = "magic";
 
     SetTraceLogLevel(LOG_WARNING);
     
