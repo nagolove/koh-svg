@@ -3,9 +3,10 @@ return {
     {
         not_dependencies = {
             "lfs",
+            "resvg",
         },
-        artifact = "aslod",
-        main = "aslod_main.c",
+        artifact = "mgc",
+        main = "mgc_main.c",
         src = "src",
         exclude = {
             --"t80_stage_empty.c",
