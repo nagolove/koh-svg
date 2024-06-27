@@ -35,6 +35,11 @@ typedef struct Stage_shot {
     Resource          res_list;
     de_entity         borders[4];
     uint32_t          borders_num;
+
+    FilesSearchResult fsr_svg;
+    FilesSearchSetup  fss_svg;
+    bool              *selected_svg;
+
     // }}}
 } Stage_shot;
 
@@ -87,9 +92,14 @@ static void body_creator(float x, float y, void *udata) {
     struct CreatorCtx *ctx = udata;
     WorldCtx *wctx = &ctx->st->wctx;
     Stage_shot *st = ctx->st;
-    trace("body_creator:\n");
+    /*trace("body_creator:\n");*/
 
     if (ctx->last_used) {
+        trace(
+            "body_creator: start %s, end %s\n",
+            b2Vec2_to_str(ctx->last),
+            b2Vec2_to_str((b2Vec2) { x, y })
+        );
         spawn_segment(
             wctx,
             &(struct SegmentSetup) {
@@ -107,8 +117,43 @@ static void body_creator(float x, float y, void *udata) {
     ctx->last.y = y;
 }
 
+static void svg_begin_search(FilesSearchResult *fsr) {
+    Stage_shot *st = fsr->udata;
+    assert(st);
+
+    if (st->selected_svg) {
+        free(st->selected_svg);
+        st->selected_svg = NULL;
+    }
+}
+
+static void svg_end_search(FilesSearchResult *fsr) {
+    Stage_shot *st = fsr->udata;
+    assert(st);
+
+    st->selected_svg = calloc(fsr->num, sizeof(st->selected_svg[0]));
+}
+
+static void svg_shutdown_selected(FilesSearchResult *fsr) {
+    Stage_shot *st = fsr->udata;
+    assert(st);
+
+    if (st->selected_svg) {
+        free(st->selected_svg);
+        st->selected_svg = NULL;
+    }
+}
+
 static void stage_shot_init(struct Stage_shot *st) {
     trace("stage_shot_init:\n");
+
+    st->fss_svg.deep = 2;
+    st->fss_svg.path = "assets";
+    st->fss_svg.regex_pattern = ".*\\.svg$";
+    st->fss_svg.on_search_begin = svg_begin_search;
+    st->fss_svg.on_search_end = svg_end_search;
+    st->fss_svg.on_shutdown = svg_shutdown_selected;
+    st->fss_svg.udata = st;
 
     Resource *rl = &st->res_list;
     st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
@@ -157,6 +202,7 @@ static void stage_shot_update(struct Stage_shot *st) {
 }
 
 static void box2d_actions_gui(struct Stage_shot *st) {
+    // {{{
     assert(st);
     struct WorldCtx *wctx = &st->wctx;
     assert(wctx);
@@ -313,12 +359,57 @@ static void box2d_actions_gui(struct Stage_shot *st) {
     */
 
     igEnd();
+    // }}}
+}
+
+static char *get_selected_svg(Stage_shot *st) {
+    for (int i = 0; i < st->fsr_svg.num; i++) 
+        if (st->selected_svg[i])
+            return st->fsr_svg.names[i];
+    return NULL;
+}
+
+static void shot_gui(Stage_shot *st) {
+    // {{{
+    bool open = true;
+    ImGuiWindowFlags flags = 0;
+    igBegin("magic", &open, flags);
+
+    ImGuiComboFlags combo_flags = 0;
+    if (igBeginCombo("scenes", "---", combo_flags)) {
+        for (int i = 0; i < st->fsr_svg.num; ++i) {
+            ImGuiSelectableFlags selectable_flags = 0;
+            if (igSelectable_BoolPtr(
+                    st->fsr_svg.names[i], &st->selected_svg[i],
+                    selectable_flags, (ImVec2){}
+                )) {
+                
+                for (int j = 0; j < st->fsr_svg.num; ++j) {
+                    if (i != j)
+                        st->selected_svg[j] = false;
+                }
+            }
+        }
+        //*/
+        igEndCombo();
+    }
+    igSameLine(0., 5.);
+
+    ImVec2 zero = {};
+    if (igButton("switch", zero)) {
+        koh_search_files_shutdown(&st->fsr_svg);
+        koh_search_files(&st->fss_svg);
+    }
+
+    igEnd();
+    // }}}
 }
 
 static void stage_shot_gui(struct Stage_shot *st) {
     assert(st);
     box2d_gui(&st->wctx);
     box2d_actions_gui(st);
+    shot_gui(st);
 }
 
 static void stage_shot_enter(struct Stage_shot *st) {
