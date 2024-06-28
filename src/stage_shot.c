@@ -17,7 +17,7 @@
 #include "nanosvg.h"
 #include "raylib.h"
 #include "rlgl.h"
-#include "svg.h"
+#include "koh_b2_world.h"
 #include <assert.h>
 #include <stdlib.h>
 // }}}
@@ -27,6 +27,7 @@ typedef struct Stage_shot {
     Stage             parent;
     Camera2D          cam;
     NSVGimage         *nsvg_img;
+    Rectangle         svg_bound;
     WorldCtx          wctx;
     xorshift32_state  xrng;
     b2Vec2            gravity;
@@ -72,7 +73,8 @@ static bool query_world_draw(b2ShapeId shape_id, void* context) {
             world_shape_render_poly(shape_id, &st->wctx, st->r);
             break;
         case b2_segmentShape: 
-            trace("query_world_draw: b2_segmentShape is not implemented\n");
+            world_shape_render_segment(shape_id, &st->wctx, st->r);
+            //trace("query_world_draw: b2_segmentShape is not implemented\n");
             break;
         default: 
             trace("query_world_draw: default branch, unknown shape type\n");
@@ -88,6 +90,28 @@ struct CreatorCtx {
     Stage_shot  *st;
 };
 
+static de_entity segment_create(
+    de_ecs *r, WorldCtx *wctx, b2Vec2 p1, b2Vec2 p2
+) {
+    b2Segment seg = { p1, p2, };
+    float len_sq = b2LengthSquared(b2Sub(seg.point1, seg.point2));
+
+    if (len_sq > FLT_EPSILON) {
+        b2BodyDef bd = b2DefaultBodyDef();
+        bd.type = b2_staticBody;
+
+        b2BodyId bid = b2CreateBody(wctx->world, &bd);
+
+        b2ShapeDef sd = b2DefaultShapeDef();
+        b2CreateSegmentShape(bid, &sd, &seg);
+        trace("segment_create: created\n");
+    } else {
+        trace("segment_create: too short segment\n");
+    }
+    return de_null;
+}
+
+__attribute_maybe_unused__
 static void body_creator(float x, float y, void *udata) {
     struct CreatorCtx *ctx = udata;
     WorldCtx *wctx = &ctx->st->wctx;
@@ -100,6 +124,8 @@ static void body_creator(float x, float y, void *udata) {
             b2Vec2_to_str(ctx->last),
             b2Vec2_to_str((b2Vec2) { x, y })
         );
+
+        /*
         spawn_segment(
             wctx,
             &(struct SegmentSetup) {
@@ -109,6 +135,9 @@ static void body_creator(float x, float y, void *udata) {
                 .color = RED,
                 .r = st->r,
         });
+        */
+
+        segment_create(st->r, wctx, ctx->last, (b2Vec2) { x, y });
     } else {
         ctx->last_used = true;
     }
@@ -144,6 +173,34 @@ static void svg_shutdown_selected(FilesSearchResult *fsr) {
     }
 }
 
+static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
+    assert(r);
+
+    de_entity e = de_create(r);
+
+    b2BodyId *bid = de_emplace(r, e, cp_type_body);
+    ShapeRenderOpts *r_opts = de_emplace(r, e, cp_type_shape_render_opts);
+
+    r_opts->color = GREEN;
+    r_opts->tex = NULL;
+    r_opts->thick = 5.;
+
+    assert(bid);
+    b2Polygon poly = b2MakeBox(rect.width, rect.height);
+
+    b2BodyDef bd = b2DefaultBodyDef();
+    bd.type = b2_staticBody;
+    bd.position = (b2Vec2) { rect.x, rect.y };
+
+    *bid = b2CreateBody(wctx->world, &bd);
+
+    b2ShapeDef sd = b2DefaultShapeDef();
+    //b2CreateSegmentShape(bid, &sd, &seg);
+    b2CreatePolygonShape(*bid, &sd, &poly);
+    trace("box_create: created\n");
+    return e;
+}
+
 static void stage_shot_init(struct Stage_shot *st) {
     trace("stage_shot_init:\n");
 
@@ -161,12 +218,13 @@ static void stage_shot_init(struct Stage_shot *st) {
     st->cam.zoom = 1.;
     st->r = de_ecs_make();
 
-    const char *path = "assets/magic_level_01.svg";
+    const char *path = "assets/magic_level_04.svg";
     st->nsvg_img = nsvgParseFromFile(path, "px", 96.0f);
     assert(st->nsvg_img);
 
     st->xrng = xorshift32_init();
-    st->gravity = (b2Vec2) { 0., -9.8 };
+    //st->gravity = (b2Vec2) { 0., -9.8 };
+    st->gravity = (b2Vec2) { 0., -0.1 };
 
     b2WorldDef wd = b2DefaultWorldDef();
     wd.enableContinous = true;
@@ -181,10 +239,37 @@ static void stage_shot_init(struct Stage_shot *st) {
 
     }, &st->wctx);
 
+    /*
     svg_parse(st->nsvg_img, body_creator, &(struct CreatorCtx) {
         .last_used = false,
         .st = st,
     });
+    */
+    
+    trace(
+        "stage_shot_init: svg size %fx%f\n",
+        st->nsvg_img->width,
+        st->nsvg_img->height
+    );
+    st->svg_bound.width = st->nsvg_img->width;
+    st->svg_bound.height = st->nsvg_img->height;
+
+    segment_create(
+        st->r, &st->wctx,
+        (b2Vec2) { 0., 0. },
+        (b2Vec2) { GetScreenWidth(), GetScreenHeight(), }
+    );
+    segment_create(
+        st->r, &st->wctx,
+        (b2Vec2) { 0., 0. },
+        (b2Vec2) { GetScreenWidth(), 0., }
+    );
+
+    box_create(st->r, &st->wctx, (Rectangle) { 500., 500., 500., 500., });
+    box_create(st->r, &st->wctx, (Rectangle) { 50., 1500., 500., 500., });
+    box_create(st->r, &st->wctx, (Rectangle) { 50., 500., 500., 500., });
+    box_create(st->r, &st->wctx, (Rectangle) { 500., 1500., 500., 500., });
+
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
@@ -376,7 +461,7 @@ static void shot_gui(Stage_shot *st) {
     igBegin("magic", &open, flags);
 
     ImGuiComboFlags combo_flags = 0;
-    if (igBeginCombo("scenes", "---", combo_flags)) {
+    if (igBeginCombo("scenes", get_selected_svg(st), combo_flags)) {
         for (int i = 0; i < st->fsr_svg.num; ++i) {
             ImGuiSelectableFlags selectable_flags = 0;
             if (igSelectable_BoolPtr(
@@ -473,14 +558,14 @@ static void cubicBez(
             points, points_num, points_cap
         ); 
     } else {
-        rlVertex2f(x4, y4);
+        /*rlVertex2f(x4, y4);*/
             if (*points_num + 1 < points_cap)
                 points[(*points_num)++] = (Vector2) { x4, y4, };
     }
 }
 
 //static const unsigned char bgColor[4] = {205,202,200,255};
-static const unsigned char lineColor[4] = {0,160,192,255};
+/*static const unsigned char lineColor[4] = {0,160,192,255};*/
 
 static void draw_path(
     float* pts, int npts, char closed, float tol,
@@ -488,10 +573,10 @@ static void draw_path(
 ) {
     int i;
     //rlBegin(GL_LINE_STRIP);
-    rlBegin(RL_LINES);
+    /*rlBegin(RL_LINES);*/
     //rlColor4ubv(lineColor);
-    rlColor4ub(lineColor[0], lineColor[1], lineColor[2], lineColor[3]);
-    rlVertex2f(pts[0], pts[1]);
+    /*rlColor4ub(lineColor[0], lineColor[1], lineColor[2], lineColor[3]);*/
+    /*rlVertex2f(pts[0], pts[1]);*/
 
     //trace("++\n");
     if (*points_num + 1 < points_cap)
@@ -511,13 +596,44 @@ static void draw_path(
     //trace("draw_path: points_num %d\n", *points_num);
 
     if (closed) {
-        rlVertex2f(pts[0], pts[1]);
+        /*rlVertex2f(pts[0], pts[1]);*/
 
         //trace("++\n");
         if (*points_num + 1 < points_cap)
             points[(*points_num)++] = (Vector2) { pts[0], pts[1] };
     }
-    rlEnd();
+    /*rlEnd();*/
+}
+
+static void pass_bound(Stage_shot *st) {
+    float thick = 5.;
+    Color color = BLACK;
+    Rectangle r = st->svg_bound;
+
+    DrawLineEx(
+        (Vector2) { r.x, r.y, }, 
+        (Vector2) { r.x + r.width, r.y}, 
+        thick, color
+    );
+
+    DrawLineEx(
+        (Vector2) { r.x + r.width, r.y, }, 
+        (Vector2) { r.x + r.width, r.y + r.height}, 
+        thick, color
+    );
+
+    DrawLineEx(
+        (Vector2) { r.x + r.width, r.y + r.height}, 
+        (Vector2) { r.x, r.y + r.height}, 
+        thick, color
+    );
+
+    DrawLineEx(
+        (Vector2) { r.x, r.y + r.height}, 
+        (Vector2) { r.x, r.y, }, 
+        thick, color
+    );
+
 }
 
 static void pass_box2d(Stage_shot *st) {
@@ -549,21 +665,40 @@ static void pass_svg(Stage_shot *st) {
     for (shape = img->shapes; shape != NULL; shape = shape->next) {
         for (path = shape->paths; path != NULL; path = path->next) {
             draw_path(
-                    path->pts, path->npts, path->closed, px * 1.5f, 
-                    points, &points_num, points_cap
-                    );
+                path->pts, path->npts, path->closed, px * 1.5f, 
+                points, &points_num, points_cap
+            );
             //drawControlPts(path->pts, path->npts);
+
+            const float thick = 5.;
+            unsigned char *components = ((unsigned char*)&shape->stroke.color);
+
+            /*
+            trace(
+                "pass_svg: components { %d, %d, %d, %d }\n",
+                components[0],
+                components[1],
+                components[2],
+                components[3]
+            );
+            */
+
+            Color color = {
+                .r = components[0],
+                .g = components[1],
+                .b = components[2],
+                .a = 255,
+            };
+
+            //trace("stage_shot_draw: points_num %d\n", points_num);
+
+            for (int i = 0; i + 1 < points_num; i++) {
+                DrawLineEx(points[i], points[i + 1], thick, color);
+            }
+            points_num = 0;
         }
     }
 
-const float thick = 5.;
-Color color = BLUE;
-
-//trace("stage_shot_draw: points_num %d\n", points_num);
-
-for (int i = 0; i + 1 < points_num; i++) {
-    DrawLineEx(points[i], points[i + 1], thick, color);
-}
 }
 
 static void stage_shot_draw(Stage_shot *st) {
@@ -571,6 +706,11 @@ static void stage_shot_draw(Stage_shot *st) {
 
     pass_svg(st);
     pass_box2d(st);
+    pass_bound(st);
+
+    WorldCtx *wctx = &st->wctx;
+    if (wctx->is_dbg_draw)
+        b2World_Draw(wctx->world, &wctx->world_dbg_draw);
 
     EndMode2D();
 }
