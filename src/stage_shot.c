@@ -6,6 +6,7 @@
 
 // includes {{{
 #include "svg.h"
+#include "koh_input.h"
 #include "cimgui.h"
 #include "koh_b2.h"
 #include "koh_b2_world.h"
@@ -25,8 +26,11 @@
 // }}}
 
 typedef struct Stage_shot {
-    // {{{
     Stage             parent;
+    // {{{
+    InputKbMouseDrawer *kb_drawer;
+    InputGamepadDrawer *gp_drawer;
+
     Camera2D          cam;
     NSVGimage         *nsvg_img;
     Rectangle         svg_bound;
@@ -176,6 +180,45 @@ static void svg_shutdown_selected(FilesSearchResult *fsr) {
     }
 }
 
+static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
+    assert(r);
+
+    de_entity e = de_create(r);
+
+    b2BodyId *bid = de_emplace(r, e, cp_type_body);
+    ShapeRenderOpts *r_opts = de_emplace(r, e, cp_type_shape_render_opts);
+
+    r_opts->color = GREEN;
+    r_opts->tex = NULL;
+    r_opts->thick = 5.;
+
+    assert(bid);
+    b2Polygon poly = b2MakeBox(rect.width, rect.height);
+
+    b2BodyDef bd = b2DefaultBodyDef();
+    bd.userData = (void*)(uintptr_t)e;
+    //bd.type = b2_staticBody;
+    bd.type = b2_dynamicBody;
+    bd.position = (b2Vec2) { rect.x, rect.y };
+
+    *bid = b2CreateBody(wctx->world, &bd);
+
+    b2ShapeDef sd = b2DefaultShapeDef();
+    sd.userData = (void*)(uintptr_t)e;
+    //b2CreateSegmentShape(bid, &sd, &seg);
+    /*b2CreatePolygonShape(*bid, &sd, &poly);*/
+    const b2Circle circle = {
+        .center = {
+            rect.x, 
+            rect.y, 
+        },
+        .radius = rect.width,
+    };
+    b2CreateCircleShape(*bid, &sd, &circle);
+    trace("circle_create: created\n");
+    return e;
+}
+
 static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     assert(r);
 
@@ -207,6 +250,11 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
 
 static void stage_shot_init(struct Stage_shot *st) {
     trace("stage_shot_init:\n");
+
+    st->kb_drawer = input_kb_new(&(struct InputKbMouseDrawerSetup) {
+        .btn_width = 70.,
+    });
+    st->gp_drawer = input_gp_new();
 
     st->tm = timerman_new(512, "shot_timers");
 
@@ -245,12 +293,10 @@ static void stage_shot_init(struct Stage_shot *st) {
 
     }, &st->wctx);
 
-    /*
-    svg_parse(st->nsvg_img, body_creator, &(struct CreatorCtx) {
+    svg_parse(st->nsvg_img, 1., body_creator, &(struct CreatorCtx) {
         .last_used = false,
         .st = st,
     });
-    */
     
     trace(
         "stage_shot_init: svg size %fx%f\n",
@@ -260,18 +306,22 @@ static void stage_shot_init(struct Stage_shot *st) {
     st->svg_bound.width = st->nsvg_img->width;
     st->svg_bound.height = st->nsvg_img->height;
 
+    /*
     segment_create(
         st->r, &st->wctx,
         (b2Vec2) { 0., 0. },
         (b2Vec2) { GetScreenWidth(), GetScreenHeight(), }
     );
+    */
+
     segment_create(
         st->r, &st->wctx,
-        (b2Vec2) { 0., 0. },
-        (b2Vec2) { GetScreenWidth(), 0., }
+        (b2Vec2) { 0., st->nsvg_img->height },
+        (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, }
     );
 
     float y = -200.;
+
     box_create(st->r, &st->wctx, (Rectangle) { 50., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 250., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 450., y, 40., 10., });
@@ -292,6 +342,16 @@ static void stage_shot_update(struct Stage_shot *st) {
         .modifier_key_down = KEY_LEFT_SHIFT,
     });
     world_step(&st->wctx);
+
+
+    if (IsKeyDown(KEY_C)) {
+        float y = -200.;
+        float radius = 4.;
+        circle_create(st->r, &st->wctx, (Rectangle) { 50., y, radius, 10., });
+        circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
+        circle_create(st->r, &st->wctx, (Rectangle) { 450., y, radius, 10., });
+        circle_create(st->r, &st->wctx, (Rectangle) { 650., y, radius, 10., });
+    }
 }
 
 static void box2d_actions_gui(struct Stage_shot *st) {
@@ -511,6 +571,11 @@ static void shot_gui(Stage_shot *st) {
 
 static void stage_shot_gui(struct Stage_shot *st) {
     assert(st);
+
+    input_gp_update(st->gp_drawer);
+    input_kb_update(st->kb_drawer);
+    input_kb_gui_update(st->kb_drawer);
+
     box2d_gui(&st->wctx);
     box2d_actions_gui(st);
     shot_gui(st);
@@ -732,6 +797,10 @@ static void stage_shot_draw(Stage_shot *st) {
 
 static void stage_shot_shutdown(struct Stage_shot *st) {
     trace("stage_shot_shutdown:\n");
+
+    input_gp_free(st->gp_drawer);
+    input_kb_free(st->kb_drawer);
+
     timerman_free(st->tm);
     nsvgDelete(st->nsvg_img);
     de_ecs_destroy(st->r);
