@@ -77,14 +77,14 @@ void draw_path(
     }
 }
 
-void svg_parse(NSVGimage *img, SvgParseFunc func, void *udata) {
+void svg_parse(NSVGimage *img, float px, SvgParseFunc func, void *udata) {
     assert(img);
     assert(func);
 
 	NSVGshape *shape;
 	NSVGpath  *path;
 
-    const float px = 1.5;
+    assert(px != 0.);
 
     trace("svg_parse:\n");
 

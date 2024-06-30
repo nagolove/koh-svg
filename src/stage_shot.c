@@ -5,6 +5,7 @@
 #define NANOSVG_IMPLEMENTATION
 
 // includes {{{
+#include "svg.h"
 #include "cimgui.h"
 #include "koh_b2.h"
 #include "koh_b2_world.h"
@@ -20,6 +21,7 @@
 #include "koh_b2_world.h"
 #include <assert.h>
 #include <stdlib.h>
+#include "koh_timerman.h"
 // }}}
 
 typedef struct Stage_shot {
@@ -41,6 +43,7 @@ typedef struct Stage_shot {
     FilesSearchSetup  fss_svg;
     bool              *selected_svg;
 
+    struct TimerMan   *tm;
     // }}}
 } Stage_shot;
 
@@ -189,7 +192,8 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     b2Polygon poly = b2MakeBox(rect.width, rect.height);
 
     b2BodyDef bd = b2DefaultBodyDef();
-    bd.type = b2_staticBody;
+    //bd.type = b2_staticBody;
+    bd.type = b2_dynamicBody;
     bd.position = (b2Vec2) { rect.x, rect.y };
 
     *bid = b2CreateBody(wctx->world, &bd);
@@ -203,6 +207,8 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
 
 static void stage_shot_init(struct Stage_shot *st) {
     trace("stage_shot_init:\n");
+
+    st->tm = timerman_new(512, "shot_timers");
 
     st->fss_svg.deep = 2;
     st->fss_svg.path = "assets";
@@ -223,8 +229,8 @@ static void stage_shot_init(struct Stage_shot *st) {
     assert(st->nsvg_img);
 
     st->xrng = xorshift32_init();
-    //st->gravity = (b2Vec2) { 0., -9.8 };
-    st->gravity = (b2Vec2) { 0., -0.1 };
+    st->gravity = (b2Vec2) { 0., 9.8 };
+    //st->gravity = (b2Vec2) { 0., -0.1 };
 
     b2WorldDef wd = b2DefaultWorldDef();
     wd.enableContinous = true;
@@ -265,14 +271,16 @@ static void stage_shot_init(struct Stage_shot *st) {
         (b2Vec2) { GetScreenWidth(), 0., }
     );
 
-    box_create(st->r, &st->wctx, (Rectangle) { 500., 500., 500., 500., });
-    box_create(st->r, &st->wctx, (Rectangle) { 50., 1500., 500., 500., });
-    box_create(st->r, &st->wctx, (Rectangle) { 50., 500., 500., 500., });
-    box_create(st->r, &st->wctx, (Rectangle) { 500., 1500., 500., 500., });
+    float y = -200.;
+    box_create(st->r, &st->wctx, (Rectangle) { 50., y, 40., 10., });
+    box_create(st->r, &st->wctx, (Rectangle) { 250., y, 40., 10., });
+    box_create(st->r, &st->wctx, (Rectangle) { 450., y, 40., 10., });
+    box_create(st->r, &st->wctx, (Rectangle) { 650., y, 40., 10., });
 
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
+    timerman_update(st->tm);
     koh_camera_process_mouse_drag(&(struct CameraProcessDrag) {
             .mouse_btn = MOUSE_BUTTON_RIGHT,
             .cam = &st->cam
@@ -283,7 +291,7 @@ static void stage_shot_update(struct Stage_shot *st) {
         .dscale_value = 0.05,
         .modifier_key_down = KEY_LEFT_SHIFT,
     });
-
+    world_step(&st->wctx);
 }
 
 static void box2d_actions_gui(struct Stage_shot *st) {
@@ -303,6 +311,14 @@ static void box2d_actions_gui(struct Stage_shot *st) {
         e_reset_all_velocities(st->r);
     }
 
+    if (igSliderFloat("gravity y", &st->gravity.y, -100., 100., "%f", 0)) {
+        trace(
+            "box2d_actions_gui: gravity changed to %s\n",
+            b2Vec2_to_str(st->gravity)
+        );
+        b2World_SetGravity(st->wctx.world, st->gravity);
+    }
+
     igSliderInt("figures number", &num, 0, 1000, "%d", 0);
     igSliderFloat("quad height", &quad_height, 0., 500., "%f", 0);
     igSliderFloat("triangle radius", &triangle_radius, 0., 500., "%f", 0);
@@ -314,7 +330,10 @@ static void box2d_actions_gui(struct Stage_shot *st) {
     igCheckbox("verbose", &verbose);
 
     if (igButton("apply random impulse to all dyn bodies", (ImVec2){})) {
+        bool prev = koh_components_verbose;
+        koh_components_verbose = true;
         e_apply_random_impulse_to_bodies(st->r, &st->wctx);
+        koh_components_verbose = prev;
     }
 
     static bool use_static = false;
@@ -495,6 +514,7 @@ static void stage_shot_gui(struct Stage_shot *st) {
     box2d_gui(&st->wctx);
     box2d_actions_gui(st);
     shot_gui(st);
+    de_gui(st->r, de_null);
 }
 
 static void stage_shot_enter(struct Stage_shot *st) {
@@ -534,18 +554,20 @@ static void cubicBez(
     
     if (level > 12) return;
 
-    x12 = (x1+x2)*0.5f;
-    y12 = (y1+y2)*0.5f;
-    x23 = (x2+x3)*0.5f;
-    y23 = (y2+y3)*0.5f;
-    x34 = (x3+x4)*0.5f;
-    y34 = (y3+y4)*0.5f;
-    x123 = (x12+x23)*0.5f;
-    y123 = (y12+y23)*0.5f;
-    x234 = (x23+x34)*0.5f;
-    y234 = (y23+y34)*0.5f;
-    x1234 = (x123+x234)*0.5f;
-    y1234 = (y123+y234)*0.5f;
+    const float coef = .5f;
+
+    x12 = (x1 + x2) * coef;
+    y12 = (y1 + y2) * coef;
+    x23 = (x2 + x3) * coef;
+    y23 = (y2 + y3) * coef;
+    x34 = (x3 + x4) * coef;
+    y34 = (y3 + y4) * coef;
+    x123 = (x12 + x23) * coef;
+    y123 = (y12 + y23) * coef;
+    x234 = (x23 + x34) * coef;
+    y234 = (y23 + y34) * coef;
+    x1234 = (x123 + x234) * coef;
+    y1234 = (y123 + y234) * coef;
 
     d = distPtSeg(x1234, y1234, x1,y1, x4,y4);
     if (d > tol*tol) {
@@ -568,32 +590,26 @@ static void cubicBez(
 /*static const unsigned char lineColor[4] = {0,160,192,255};*/
 
 static void draw_path(
-    float* pts, int npts, char closed, float tol,
+    float* pts_in, int npts, char closed, float tol,
+    float scale,
     Vector2 *points, int *points_num, int points_cap
 ) {
-    int i;
-    //rlBegin(GL_LINE_STRIP);
-    /*rlBegin(RL_LINES);*/
-    //rlColor4ubv(lineColor);
-    /*rlColor4ub(lineColor[0], lineColor[1], lineColor[2], lineColor[3]);*/
-    /*rlVertex2f(pts[0], pts[1]);*/
+    //trace("draw_path: npts %d\n", npts);
+    float pts[npts * 2];
+    memset(pts, 0, sizeof(pts));
+    for (int i = 0; i < npts * 2; i++)
+        pts[i] = scale * pts_in[i];
 
-    //trace("++\n");
     if (*points_num + 1 < points_cap)
         points[(*points_num)++] = (Vector2) { pts[0], pts[1] };
     
-    //rlEnd();
-    //rlBegin(GL_LINE_STRIP);
-
-    for (i = 0; i < npts-1; i += 3) {
+    for (int i = 0; i < npts-1; i += 3) {
         float* p = &pts[i*2];
         cubicBez(
             p[0],p[1], p[2],p[3], p[4],p[5], p[6],p[7], tol, 0,
             points, points_num, points_cap
         );
     }
-
-    //trace("draw_path: points_num %d\n", *points_num);
 
     if (closed) {
         /*rlVertex2f(pts[0], pts[1]);*/
@@ -602,7 +618,6 @@ static void draw_path(
         if (*points_num + 1 < points_cap)
             points[(*points_num)++] = (Vector2) { pts[0], pts[1] };
     }
-    /*rlEnd();*/
 }
 
 static void pass_bound(Stage_shot *st) {
@@ -649,23 +664,23 @@ static void pass_box2d(Stage_shot *st) {
     );
 }
 
-static void pass_svg(Stage_shot *st) {
+static void pass_svg(NSVGimage *img, float scale) {
+    assert(img);
+    assert(scale != 0.);
 	NSVGshape *shape;
 	NSVGpath  *path;
-    NSVGimage *img = st->nsvg_img;
 
     Vector2 points[1024] = {};
     int points_cap = sizeof(points) / sizeof(points[0]);
     int points_num = 0;
-
-    const float px = 1.;
 
     //trace("stage_shot_draw:\n");
 
     for (shape = img->shapes; shape != NULL; shape = shape->next) {
         for (path = shape->paths; path != NULL; path = path->next) {
             draw_path(
-                path->pts, path->npts, path->closed, px * 1.5f, 
+                path->pts, path->npts, path->closed, 1.5, 
+                scale,
                 points, &points_num, points_cap
             );
             //drawControlPts(path->pts, path->npts);
@@ -704,7 +719,7 @@ static void pass_svg(Stage_shot *st) {
 static void stage_shot_draw(Stage_shot *st) {
     BeginMode2D(st->cam);
 
-    pass_svg(st);
+    pass_svg(st->nsvg_img, 1.);
     pass_box2d(st);
     pass_bound(st);
 
@@ -717,6 +732,7 @@ static void stage_shot_draw(Stage_shot *st) {
 
 static void stage_shot_shutdown(struct Stage_shot *st) {
     trace("stage_shot_shutdown:\n");
+    timerman_free(st->tm);
     nsvgDelete(st->nsvg_img);
     de_ecs_destroy(st->r);
     world_shutdown(&st->wctx);

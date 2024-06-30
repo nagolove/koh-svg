@@ -4,4 +4,4 @@
 
 typedef void (*SvgParseFunc)(float x, float y, void *udata);
 
-void svg_parse(NSVGimage *img, SvgParseFunc func, void *udata);
+void svg_parse(NSVGimage *img, float px, SvgParseFunc func, void *udata);
