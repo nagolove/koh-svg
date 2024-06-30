@@ -23,6 +23,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include "koh_timerman.h"
+#include "koh_routine.h"
 // }}}
 
 typedef struct Stage_shot {
@@ -101,9 +102,10 @@ static de_entity segment_create(
     de_ecs *r, WorldCtx *wctx, b2Vec2 p1, b2Vec2 p2
 ) {
     b2Segment seg = { p1, p2, };
-    float len_sq = b2LengthSquared(b2Sub(seg.point1, seg.point2));
+    float len_sq = b2Length(b2Sub(seg.point1, seg.point2));
 
     if (len_sq > FLT_EPSILON) {
+    //if (1) {
         b2BodyDef bd = b2DefaultBodyDef();
         bd.type = b2_staticBody;
 
@@ -118,13 +120,11 @@ static de_entity segment_create(
     return de_null;
 }
 
-__attribute_maybe_unused__
 static void body_creator(float x, float y, void *udata) {
     struct CreatorCtx *ctx = udata;
     WorldCtx *wctx = &ctx->st->wctx;
     Stage_shot *st = ctx->st;
-    /*trace("body_creator:\n");*/
-
+    //trace("body_creator:\n");
     if (ctx->last_used) {
         trace(
             "body_creator: start %s, end %s\n",
@@ -132,17 +132,15 @@ static void body_creator(float x, float y, void *udata) {
             b2Vec2_to_str((b2Vec2) { x, y })
         );
 
-        /*
-        spawn_segment(
-            wctx,
-            &(struct SegmentSetup) {
-                .start = ctx->last,
-                .end = (b2Vec2) { x, y },
-                //.color = pallete_get_random32(&st->pallete, st->wctx.xrng),
-                .color = RED,
-                .r = st->r,
-        });
-        */
+        //spawn_segment(
+            //wctx,
+            //&(struct SegmentSetup) {
+                //.start = ctx->last,
+                //.end = (b2Vec2) { x, y },
+                ////.color = pallete_get_random32(&st->pallete, st->wctx.xrng),
+                //.color = RED,
+                //.r = st->r,
+        //});
 
         segment_create(st->r, wctx, ctx->last, (b2Vec2) { x, y });
     } else {
@@ -152,6 +150,7 @@ static void body_creator(float x, float y, void *udata) {
     ctx->last.x = x;
     ctx->last.y = y;
 }
+//*/
 
 static void svg_begin_search(FilesSearchResult *fsr) {
     Stage_shot *st = fsr->udata;
@@ -193,7 +192,6 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     r_opts->thick = 5.;
 
     assert(bid);
-    b2Polygon poly = b2MakeBox(rect.width, rect.height);
 
     b2BodyDef bd = b2DefaultBodyDef();
     bd.userData = (void*)(uintptr_t)e;
@@ -215,7 +213,8 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
         .radius = rect.width,
     };
     b2CreateCircleShape(*bid, &sd, &circle);
-    trace("circle_create: created\n");
+
+    /*trace("circle_create: created\n");*/
     return e;
 }
 
@@ -246,6 +245,15 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     b2CreatePolygonShape(*bid, &sd, &poly);
     trace("box_create: created\n");
     return e;
+}
+
+static void parse_segment(Vector2 p1, Vector2 p2, void *udata) {
+    Stage_shot *st = udata;
+
+    trace("parse_segment:\n");
+    segment_create(
+        st->r, &st->wctx, Vector2_to_Vec2(p1), Vector2_to_Vec2(p1)
+    );
 }
 
 static void stage_shot_init(struct Stage_shot *st) {
@@ -297,6 +305,13 @@ static void stage_shot_init(struct Stage_shot *st) {
         .last_used = false,
         .st = st,
     });
+
+    Vector2 points[1024] = {};
+    int points_num = 0, points_cap = sizeof(points) / sizeof(points[0]);
+    svg_parse_segments(
+        st->nsvg_img, 10., points, &points_num, points_cap,
+        parse_segment, st
+    );
     
     trace(
         "stage_shot_init: svg size %fx%f\n",
