@@ -78,14 +78,19 @@ void draw_path(
     }
 }
 
-void svg_parse(NSVGimage *img, float px, SvgParseFunc func, void *udata) {
+void svg_parse(
+    NSVGimage *img,
+    SvgParseFunc func,
+    SvgParseFuncNextPath func_nextp,
+    void *udata
+) {
     assert(img);
     assert(func);
 
 	NSVGshape *shape;
 	NSVGpath  *path;
 
-    assert(px != 0.);
+    const float px = 1.;
 
     trace("svg_parse:\n");
 
@@ -94,6 +99,8 @@ void svg_parse(NSVGimage *img, float px, SvgParseFunc func, void *udata) {
 			draw_path(
                 path->pts, path->npts, path->closed, px, func, udata
             );
+            if (func_nextp)
+                func_nextp(udata);
 			//drawControlPts(path->pts, path->npts);
 		}
 	}

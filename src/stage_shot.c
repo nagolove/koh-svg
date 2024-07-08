@@ -52,6 +52,16 @@ typedef struct Stage_shot {
     // }}}
 } Stage_shot;
 
+static void input_init(Stage_shot *st) {
+}
+
+static void input_shutdown(Stage_shot *st) {
+}
+
+//static void input_update(Stage_shot *st) {
+//}
+
+
 static bool world_query_AABB = true;
 static bool draw_sensors = false,
             verbose = false;
@@ -109,15 +119,24 @@ static de_entity segment_create(
         b2BodyDef bd = b2DefaultBodyDef();
         bd.type = b2_staticBody;
 
-        b2BodyId bid = b2CreateBody(wctx->world, &bd);
+        de_entity e = de_create(r);
+        b2BodyId *bid = de_emplace(r, e, cp_type_body);
+
+        *bid = b2CreateBody(wctx->world, &bd);
 
         b2ShapeDef sd = b2DefaultShapeDef();
-        b2CreateSegmentShape(bid, &sd, &seg);
+        b2CreateSegmentShape(*bid, &sd, &seg);
         trace("segment_create: created\n");
     } else {
         trace("segment_create: too short segment\n");
     }
     return de_null;
+}
+
+static void body_creator_next_path(void *udata) {
+    trace("body_creator_next_path:\n");
+    struct CreatorCtx *ctx = udata;
+    ctx->last_used = false;
 }
 
 static void body_creator(float x, float y, void *udata) {
@@ -256,6 +275,31 @@ static void parse_segment(Vector2 p1, Vector2 p2, void *udata) {
     );
 }
 
+struct TmrSpaweCircleCtx {
+};
+
+// TODO: Нужно вызвать таймер раз в n секунд. Что делать?
+static bool tmr_spawn_circle_update(struct Timer *tmr) {
+    //trace("tmr_spawn_circle:\n");
+    //Stage_shot *st = tmr->data;
+    //const float radius = 20.;
+    //double now = GetTime();
+    //double delta = (now - tmr->last_now);
+    //trace("tmr_spawn_circle: delta %f\n", delta);
+    //circle_create(st->r, &st->wctx, (Rectangle) { 50., 0, radius, 10., });
+    return false;
+}
+
+// TODO: Как перезапустить таймер?
+static void tmr_spawn_circle_stop(struct Timer *tmr) {
+    //Stage_shot *st = tmr->data;
+    //const float radius = 20.;
+    //double now = GetTime();
+    //double delta = (now - tmr->last_now);
+    //trace("tmr_spawn_circle: delta %f\n", delta);
+    //circle_create(st->r, &st->wctx, (Rectangle) { 50., 0, radius, 10., });
+}
+
 static void stage_shot_init(struct Stage_shot *st) {
     trace("stage_shot_init:\n");
 
@@ -301,18 +345,31 @@ static void stage_shot_init(struct Stage_shot *st) {
 
     }, &st->wctx);
 
-    svg_parse(st->nsvg_img, 1., body_creator, &(struct CreatorCtx) {
-        .last_used = false,
-        .st = st,
+    svg_parse(st->nsvg_img, body_creator, body_creator_next_path,
+        &(struct CreatorCtx) {
+            .last_used = false,
+            .st = st,
     });
+    //*/
 
+    /*
     Vector2 points[1024] = {};
     int points_num = 0, points_cap = sizeof(points) / sizeof(points[0]);
     svg_parse_segments(
         st->nsvg_img, 10., points, &points_num, points_cap,
         parse_segment, st
     );
-    
+
+    trace("stage_shot_init: points_num %d\n", points_num);
+    WorldCtx *wctx = &st->wctx;
+    Vector2 last = points[0];
+    for (int i = 1; i < points_num; i++) {
+        b2Vec2 p1 = Vector2_to_Vec2(last), p2 = Vector2_to_Vec2(points[i]);
+        segment_create(st->r, wctx, p1, p2);
+        last = points[i];
+    }
+    */
+
     trace(
         "stage_shot_init: svg size %fx%f\n",
         st->nsvg_img->width,
@@ -342,6 +399,29 @@ static void stage_shot_init(struct Stage_shot *st) {
     box_create(st->r, &st->wctx, (Rectangle) { 450., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 650., y, 40., 10., });
 
+    timerman_add(st->tm, (struct TimerDef) {
+        .duration = 1.5,
+        .udata = st,
+        .on_update = tmr_spawn_circle_update,
+        .on_stop = tmr_spawn_circle_stop,
+    });
+}
+
+static void rot_left(Stage_shot *st) {
+    trace("rot_left:\n");
+    de_view v = de_view_create(st->r, 1, (de_cp_type[]) { cp_type_body });
+    for (; de_view_valid(&v); de_view_next(&v)) {
+        trace("rot_left: view iteration\n");
+        b2BodyId *bid = de_view_get_safe(&v, cp_type_body);
+        assert(bid);
+
+        b2BodyType btype = b2Body_GetType(*bid);
+        if (btype != b2_staticBody)
+            continue;
+
+        b2Transform t = b2Body_GetTransform(*bid);
+        b2Body_SetTransform(*bid, t.p, b2Body_GetAngle(*bid) + 0.001);
+    }
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
@@ -366,6 +446,11 @@ static void stage_shot_update(struct Stage_shot *st) {
         circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
         circle_create(st->r, &st->wctx, (Rectangle) { 450., y, radius, 10., });
         circle_create(st->r, &st->wctx, (Rectangle) { 650., y, radius, 10., });
+    }
+
+    // left
+    if (IsKeyDown(KEY_Q)) {
+        rot_left(st);
     }
 }
 
@@ -700,7 +785,7 @@ static void draw_path(
     }
 }
 
-static void pass_bound(Stage_shot *st) {
+static void render_pass_bound(Stage_shot *st) {
     float thick = 5.;
     Color color = BLACK;
     Rectangle r = st->svg_bound;
@@ -731,7 +816,7 @@ static void pass_bound(Stage_shot *st) {
 
 }
 
-static void pass_box2d(Stage_shot *st) {
+static void render_pass_box2d(Stage_shot *st) {
     if (!world_query_AABB)
         return;
 
@@ -744,7 +829,7 @@ static void pass_box2d(Stage_shot *st) {
     );
 }
 
-static void pass_svg(NSVGimage *img, float scale) {
+static void render_pass_svg(NSVGimage *img, float scale) {
     assert(img);
     assert(scale != 0.);
 	NSVGshape *shape;
@@ -799,9 +884,9 @@ static void pass_svg(NSVGimage *img, float scale) {
 static void stage_shot_draw(Stage_shot *st) {
     BeginMode2D(st->cam);
 
-    pass_svg(st->nsvg_img, 1.);
-    pass_box2d(st);
-    pass_bound(st);
+    render_pass_svg(st->nsvg_img, 1.);
+    render_pass_box2d(st);
+    render_pass_bound(st);
 
     WorldCtx *wctx = &st->wctx;
     if (wctx->is_dbg_draw)
