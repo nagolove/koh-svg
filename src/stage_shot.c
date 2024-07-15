@@ -1,4 +1,5 @@
 // vim: set colorcolumn=85
+// de_ecs состояние
 // vim: fdm=marker
 #include "stage_shot.h"
 
@@ -23,12 +24,23 @@
 #include <assert.h>
 #include <stdlib.h>
 #include "koh_timerman.h"
+#include "koh_table.h"
 #include "koh_routine.h"
 // }}}
 
 typedef struct Stage_shot {
     Stage             parent;
     // {{{
+
+    /* 
+    Уровень загружен - 
+        ресурсы raylib 
+        мир box2d
+        nanosvg изображение
+        de_ecs состояние
+    */
+    bool               loaded; 
+
     InputKbMouseDrawer *kb_drawer;
     InputGamepadDrawer *gp_drawer;
 
@@ -48,20 +60,26 @@ typedef struct Stage_shot {
     FilesSearchSetup  fss_svg;
     bool              *selected_svg;
 
+    // b2ShapeId при соприкосновении с которыми тела удаляются
+    koh_Set           *sensors_killer;
+
     struct TimerMan   *tm;
     // }}}
 } Stage_shot;
 
+/*
 static void input_init(Stage_shot *st) {
 }
 
 static void input_shutdown(Stage_shot *st) {
 }
+*/
 
 //static void input_update(Stage_shot *st) {
 //}
 
-
+const static float grav_len = 9.8; 
+const static float rot_delta_angle = 1.;
 static bool world_query_AABB = true;
 static bool draw_sensors = false,
             verbose = false;
@@ -114,23 +132,32 @@ static de_entity segment_create(
     b2Segment seg = { p1, p2, };
     float len_sq = b2Length(b2Sub(seg.point1, seg.point2));
 
-    if (len_sq > FLT_EPSILON) {
-    //if (1) {
-        b2BodyDef bd = b2DefaultBodyDef();
-        bd.type = b2_staticBody;
-
-        de_entity e = de_create(r);
-        b2BodyId *bid = de_emplace(r, e, cp_type_body);
-
-        *bid = b2CreateBody(wctx->world, &bd);
-
-        b2ShapeDef sd = b2DefaultShapeDef();
-        b2CreateSegmentShape(*bid, &sd, &seg);
-        trace("segment_create: created\n");
-    } else {
+    if (len_sq < FLT_EPSILON) {
         trace("segment_create: too short segment\n");
+        return de_null;
     }
-    return de_null;
+
+    b2BodyDef bd = b2DefaultBodyDef();
+    bd.type = b2_staticBody;
+
+    de_entity e = de_create(r);
+    b2BodyId *bid = de_emplace(r, e, cp_type_body);
+
+    *bid = b2CreateBody(wctx->world, &bd);
+
+    b2ShapeDef sd = b2DefaultShapeDef();
+    b2CreateSegmentShape(*bid, &sd, &seg);
+
+    struct ShapeRenderOpts *r_opts = de_emplace(
+        r, e, cp_type_shape_render_opts
+    );
+
+    r_opts->color = MAROON;
+    r_opts->tex = NULL;
+    r_opts->thick = 5.;
+
+    trace("segment_create: created\n");
+    return e;
 }
 
 static void body_creator_next_path(void *udata) {
@@ -266,6 +293,7 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     return e;
 }
 
+/*
 static void parse_segment(Vector2 p1, Vector2 p2, void *udata) {
     Stage_shot *st = udata;
 
@@ -274,10 +302,7 @@ static void parse_segment(Vector2 p1, Vector2 p2, void *udata) {
         st->r, &st->wctx, Vector2_to_Vec2(p1), Vector2_to_Vec2(p1)
     );
 }
-
-struct TmrSpaweCircleCtx {
-};
-
+*/
 // TODO: Нужно вызвать таймер раз в n секунд. Что делать?
 static bool tmr_spawn_circle_update(struct Timer *tmr) {
     //trace("tmr_spawn_circle:\n");
@@ -300,8 +325,45 @@ static void tmr_spawn_circle_stop(struct Timer *tmr) {
     //circle_create(st->r, &st->wctx, (Rectangle) { 50., 0, radius, 10., });
 }
 
-static void stage_shot_init(struct Stage_shot *st) {
-    trace("stage_shot_init:\n");
+static void unload(Stage_shot *st) {
+    if (!st->loaded)
+        return;
+
+    timerman_free(st->tm);
+    nsvgDelete(st->nsvg_img);
+    de_ecs_destroy(st->r);
+    world_shutdown(&st->wctx);
+    res_unload_all(&st->res_list);
+    set_free(st->sensors_killer);
+}
+
+static b2Vec2 calc_gravity(float deg_angle) {
+    const float rad_angle = deg_angle * (M_PI / 180.);
+
+    b2Vec2 gravity = {};
+    gravity.x = sin(rad_angle) * grav_len;
+    gravity.y = cos(rad_angle) * grav_len;
+
+    /*
+    trace(
+        "calc_gravity: deg_angle %f, rad_angle %f, gravity %s\n", 
+        deg_angle, rad_angle, b2Vec2_to_str(gravity)
+    );
+    */
+
+    return gravity;
+}
+
+static void load(Stage_shot *st, const char *svg_fname) {
+    assert(st);
+    assert(svg_fname);
+
+    trace("load: svg_fname '%s'\n", svg_fname);
+
+    if (st->loaded) {
+        unload(st);
+        st->loaded = false;
+    }
 
     st->kb_drawer = input_kb_new(&(struct InputKbMouseDrawerSetup) {
         .btn_width = 70.,
@@ -310,27 +372,37 @@ static void stage_shot_init(struct Stage_shot *st) {
 
     st->tm = timerman_new(512, "shot_timers");
 
+    st->sensors_killer = set_new(NULL);
+
     st->fss_svg.deep = 2;
     st->fss_svg.path = "assets";
     st->fss_svg.regex_pattern = ".*\\.svg$";
+    //st->fss_svg.regex_pattern = ".*svg";
     st->fss_svg.on_search_begin = svg_begin_search;
     st->fss_svg.on_search_end = svg_end_search;
     st->fss_svg.on_shutdown = svg_shutdown_selected;
     st->fss_svg.udata = st;
 
+    koh_search_files_shutdown(&st->fsr_svg);
+    st->fsr_svg = koh_search_files(&st->fss_svg);
+
+    //koh_search_files_print(&st->fsr_svg);
+    koh_search_files_print2(&st->fsr_svg, trace);
+
+    //exit(1);
+
     Resource *rl = &st->res_list;
-    st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
+    //st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
+    st->tex_example = res_tex_load(rl, svg_fname);
 
     st->cam.zoom = 1.;
     st->r = de_ecs_make();
 
-    const char *path = "assets/magic_level_04.svg";
-    st->nsvg_img = nsvgParseFromFile(path, "px", 96.0f);
+    st->nsvg_img = nsvgParseFromFile(svg_fname, "px", 96.0f);
     assert(st->nsvg_img);
 
     st->xrng = xorshift32_init();
-    st->gravity = (b2Vec2) { 0., 9.8 };
-    //st->gravity = (b2Vec2) { 0., -0.1 };
+    st->gravity = calc_gravity(st->cam.rotation);
 
     b2WorldDef wd = b2DefaultWorldDef();
     wd.enableContinous = true;
@@ -350,6 +422,7 @@ static void stage_shot_init(struct Stage_shot *st) {
             .last_used = false,
             .st = st,
     });
+    
     //*/
 
     /*
@@ -405,26 +478,35 @@ static void stage_shot_init(struct Stage_shot *st) {
         .on_update = tmr_spawn_circle_update,
         .on_stop = tmr_spawn_circle_stop,
     });
+
+    Camera2D *cam = &st->cam;
+    cam->target.x = st->nsvg_img->width / 2.;
+    cam->target.y = st->nsvg_img->height / 2.;
+
+    st->loaded = true;
 }
 
-static void rot_left(Stage_shot *st) {
-    trace("rot_left:\n");
-    de_view v = de_view_create(st->r, 1, (de_cp_type[]) { cp_type_body });
-    for (; de_view_valid(&v); de_view_next(&v)) {
-        trace("rot_left: view iteration\n");
-        b2BodyId *bid = de_view_get_safe(&v, cp_type_body);
-        assert(bid);
+static void stage_shot_init(struct Stage_shot *st) {
+    //load(st, "assets/magic_level_04.svg");
+    load(st, "assets/magic_level_03.svg");
+}
 
-        b2BodyType btype = b2Body_GetType(*bid);
-        if (btype != b2_staticBody)
-            continue;
-
-        b2Transform t = b2Body_GetTransform(*bid);
-        b2Body_SetTransform(*bid, t.p, b2Body_GetAngle(*bid) + 0.001);
-    }
+static void rotate(Stage_shot *st, const float dangle) {
+    Camera2D *cam = &st->cam;
+    cam->rotation += dangle;
+    b2World_SetGravity(st->wctx.world, calc_gravity(cam->rotation));
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
+    b2SensorEvents sensor_events = b2World_GetSensorEvents(st->wctx.world);
+    for (int i = 0; i < sensor_events.beginCount; i++) {
+        b2SensorBeginTouchEvent event = sensor_events.beginEvents[i];
+        size_t sz = sizeof(event.sensorShapeId);
+        if (set_exist(st->sensors_killer, &event.sensorShapeId, sz)) {
+            trace("stage_shot_update: sensors killer found\n");
+        }
+    }
+
     timerman_update(st->tm);
     koh_camera_process_mouse_drag(&(struct CameraProcessDrag) {
             .mouse_btn = MOUSE_BUTTON_RIGHT,
@@ -450,7 +532,9 @@ static void stage_shot_update(struct Stage_shot *st) {
 
     // left
     if (IsKeyDown(KEY_Q)) {
-        rot_left(st);
+        rotate(st, rot_delta_angle);
+    } else if (IsKeyDown(KEY_W)) {
+        rotate(st, -rot_delta_angle);
     }
 }
 
@@ -787,7 +871,7 @@ static void draw_path(
 
 static void render_pass_bound(Stage_shot *st) {
     float thick = 5.;
-    Color color = BLACK;
+    Color color = RAYWHITE;
     Rectangle r = st->svg_bound;
 
     DrawLineEx(
@@ -820,7 +904,8 @@ static void render_pass_box2d(Stage_shot *st) {
     if (!world_query_AABB)
         return;
 
-    float gap_radius = 100;
+    //float gap_radius = 100;
+    float gap_radius = 0.;
     // Прямоугольник видимой части экрана с учетом масштаба
     b2AABB screen = camera2aabb(&st->cam, gap_radius);
     b2QueryFilter filter = b2DefaultQueryFilter();
@@ -838,8 +923,6 @@ static void render_pass_svg(NSVGimage *img, float scale) {
     Vector2 points[1024] = {};
     int points_cap = sizeof(points) / sizeof(points[0]);
     int points_num = 0;
-
-    //trace("stage_shot_draw:\n");
 
     for (shape = img->shapes; shape != NULL; shape = shape->next) {
         for (path = shape->paths; path != NULL; path = path->next) {
@@ -870,8 +953,6 @@ static void render_pass_svg(NSVGimage *img, float scale) {
                 .a = 255,
             };
 
-            //trace("stage_shot_draw: points_num %d\n", points_num);
-
             for (int i = 0; i + 1 < points_num; i++) {
                 DrawLineEx(points[i], points[i + 1], thick, color);
             }
@@ -888,6 +969,22 @@ static void stage_shot_draw(Stage_shot *st) {
     render_pass_box2d(st);
     render_pass_bound(st);
 
+    Vector2 center = { st->nsvg_img->width / 2., st->nsvg_img->height / 2.};
+    DrawCircleV(center, 30., WHITE);
+
+    const float grav_scale = 10., line_thick = 10.;
+    Vector2 line_end = Vector2Add(
+        center, 
+        Vector2Scale(b2Vec2_to_Vector2(st->gravity), grav_scale)
+    );
+    DrawCircleV(line_end, 20., BLACK);
+    DrawLineEx(
+        center,
+        line_end,
+        line_thick,
+        BLUE
+    );
+
     WorldCtx *wctx = &st->wctx;
     if (wctx->is_dbg_draw)
         b2World_Draw(wctx->world, &wctx->world_dbg_draw);
@@ -900,12 +997,9 @@ static void stage_shot_shutdown(struct Stage_shot *st) {
 
     input_gp_free(st->gp_drawer);
     input_kb_free(st->kb_drawer);
+    koh_search_files_shutdown(&st->fsr_svg);
 
-    timerman_free(st->tm);
-    nsvgDelete(st->nsvg_img);
-    de_ecs_destroy(st->r);
-    world_shutdown(&st->wctx);
-    res_unload_all(&st->res_list);
+    unload(st);
 }
 
 Stage *stage_shot_new(HotkeyStorage *hk_store) {
