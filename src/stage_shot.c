@@ -6,6 +6,7 @@
 #define NANOSVG_IMPLEMENTATION
 
 // includes {{{
+#include "koh_lua_tools.h"
 #include "svg.h"
 #include "koh_input.h"
 #include "cimgui.h"
@@ -24,9 +25,26 @@
 #include <assert.h>
 #include <stdlib.h>
 #include "koh_timerman.h"
+#include "koh_reasings.h"
 #include "koh_table.h"
 #include "koh_routine.h"
 // }}}
+
+// Тэг тела, что оно является кружком
+const de_cp_type cp_type_circle = {
+    // TODO: Добавит проверку при регистрации компонента на повторение cp_id
+    .cp_id = 0, 
+
+    .cp_sizeof = sizeof(char),
+    .name = "circle",
+    .description = "circle tag",
+    .str_repr = NULL,
+    // XXX: Падает при initial_cap = 0
+    .initial_cap = 10000,
+    .on_destroy = NULL,
+    .on_emplace = NULL,
+    /*.callbacks_flags = DE_CB_ON_DESTROY | DE_CB_ON_EMPLACE,*/
+};
 
 typedef struct Stage_shot {
     Stage             parent;
@@ -44,6 +62,10 @@ typedef struct Stage_shot {
     InputKbMouseDrawer *kb_drawer;
     InputGamepadDrawer *gp_drawer;
 
+    float             circle_restinition, 
+                      rot_delta_angle;
+
+    lua_State         *l;
     Camera2D          cam;
     NSVGimage         *nsvg_img;
     Rectangle         svg_bound;
@@ -79,7 +101,6 @@ static void input_shutdown(Stage_shot *st) {
 //}
 
 const static float grav_len = 9.8; 
-const static float rot_delta_angle = 1.;
 static bool world_query_AABB = true;
 static bool draw_sensors = false,
             verbose = false;
@@ -141,7 +162,12 @@ static de_entity segment_create(
     bd.type = b2_staticBody;
 
     de_entity e = de_create(r);
+
+
+    bool prev_de_ecs_verbose = de_ecs_verbose;
+    de_ecs_verbose = true;
     b2BodyId *bid = de_emplace(r, e, cp_type_body);
+    de_ecs_verbose = prev_de_ecs_verbose;
 
     *bid = b2CreateBody(wctx->world, &bd);
 
@@ -156,7 +182,8 @@ static de_entity segment_create(
     r_opts->tex = NULL;
     r_opts->thick = 5.;
 
-    trace("segment_create: created\n");
+    /*trace("segment_create: created\n");*/
+
     return e;
 }
 
@@ -172,11 +199,14 @@ static void body_creator(float x, float y, void *udata) {
     Stage_shot *st = ctx->st;
     //trace("body_creator:\n");
     if (ctx->last_used) {
+
+        /*
         trace(
             "body_creator: start %s, end %s\n",
             b2Vec2_to_str(ctx->last),
             b2Vec2_to_str((b2Vec2) { x, y })
         );
+        */
 
         //spawn_segment(
             //wctx,
@@ -213,6 +243,9 @@ static void svg_end_search(FilesSearchResult *fsr) {
     assert(st);
 
     st->selected_svg = calloc(fsr->num, sizeof(st->selected_svg[0]));
+    if (fsr->num) {
+        st->selected_svg[0] = true;
+    }
 }
 
 static void svg_shutdown_selected(FilesSearchResult *fsr) {
@@ -231,6 +264,14 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     de_entity e = de_create(r);
 
     b2BodyId *bid = de_emplace(r, e, cp_type_body);
+
+    bool prev_de_ecs_verbose = de_ecs_verbose;
+    de_ecs_verbose = true;
+    char *tag_circle = de_emplace(r, e, cp_type_circle);
+    de_ecs_verbose = prev_de_ecs_verbose;
+
+    /*de_emplace(r, e, cp_type_circle);*/
+    *tag_circle = 1;
     ShapeRenderOpts *r_opts = de_emplace(r, e, cp_type_shape_render_opts);
 
     r_opts->color = GREEN;
@@ -246,6 +287,7 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     bd.position = (b2Vec2) { rect.x, rect.y };
 
     *bid = b2CreateBody(wctx->world, &bd);
+    b2Body_EnableSleep(*bid, false);
 
     b2ShapeDef sd = b2DefaultShapeDef();
     sd.userData = (void*)(uintptr_t)e;
@@ -258,7 +300,8 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
         },
         .radius = rect.width,
     };
-    b2CreateCircleShape(*bid, &sd, &circle);
+    b2ShapeId sid = b2CreateCircleShape(*bid, &sd, &circle);
+    b2Shape_SetRestitution(sid, 0.15);
 
     /*trace("circle_create: created\n");*/
     return e;
@@ -289,7 +332,9 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     b2ShapeDef sd = b2DefaultShapeDef();
     //b2CreateSegmentShape(bid, &sd, &seg);
     b2CreatePolygonShape(*bid, &sd, &poly);
-    trace("box_create: created\n");
+
+    /*trace("box_create: created\n");*/
+
     return e;
 }
 
@@ -329,12 +374,35 @@ static void unload(Stage_shot *st) {
     if (!st->loaded)
         return;
 
-    timerman_free(st->tm);
-    nsvgDelete(st->nsvg_img);
-    de_ecs_destroy(st->r);
+    if (st->l) {
+        lua_close(st->l);
+        st->l = NULL;
+    }
+
+    if (st->tm) {
+        timerman_free(st->tm);
+        st->tm = NULL;
+    }
+
+    if (st->nsvg_img) {
+        nsvgDelete(st->nsvg_img);
+        st->nsvg_img = NULL;
+    }
+    
+    if (st->r) {
+        de_ecs_destroy(st->r);
+        st->r = NULL;
+    }
+
     world_shutdown(&st->wctx);
     res_unload_all(&st->res_list);
-    set_free(st->sensors_killer);
+
+    if (st->sensors_killer) {
+        set_free(st->sensors_killer);
+        st->sensors_killer = NULL;
+    }
+
+    st->loaded = false;
 }
 
 static b2Vec2 calc_gravity(float deg_angle) {
@@ -354,6 +422,19 @@ static b2Vec2 calc_gravity(float deg_angle) {
     return gravity;
 }
 
+static int search_file_printer(void *udata, const char *fmt, ...) {
+    char buf[256] = {};
+
+    va_list args;
+    va_start(args, fmt);
+    int ret = vsnprintf(buf, sizeof(buf) - 1, fmt, args);
+    va_end(args);
+
+    strcat(udata, buf);
+
+    return ret;
+}
+
 static void load(Stage_shot *st, const char *svg_fname) {
     assert(st);
     assert(svg_fname);
@@ -364,6 +445,13 @@ static void load(Stage_shot *st, const char *svg_fname) {
         unload(st);
         st->loaded = false;
     }
+
+    // CONSTANTS
+    st->rot_delta_angle = 1.;
+    st->circle_restinition = 0.;
+    // END CONSTANTS
+
+    st->l = luaL_newstate();
 
     st->kb_drawer = input_kb_new(&(struct InputKbMouseDrawerSetup) {
         .btn_width = 70.,
@@ -387,7 +475,8 @@ static void load(Stage_shot *st, const char *svg_fname) {
     st->fsr_svg = koh_search_files(&st->fss_svg);
 
     //koh_search_files_print(&st->fsr_svg);
-    koh_search_files_print2(&st->fsr_svg, trace);
+    char buf[1024 * 5] = {};
+    koh_search_files_print3(&st->fsr_svg, search_file_printer, buf);
 
     //exit(1);
 
@@ -397,6 +486,22 @@ static void load(Stage_shot *st, const char *svg_fname) {
 
     st->cam.zoom = 1.;
     st->r = de_ecs_make();
+
+    // Как de_ecs могла работать без зарегистрированных типов?
+    bool prev_de_ecs_verbose = de_ecs_verbose;
+    de_ecs_verbose = true;
+
+    // HACK:
+    cp_type_body.initial_cap = 10000;
+    cp_type_shape_render_opts.initial_cap = 10000;
+
+    // Попробуй закомметировать следущую строчку.
+    koh_cp_types_register(st->r);
+
+    // Побочное поведение - следующий код регистрации должен быть до 
+    // создания сущностей.
+    de_ecs_register(st->r, cp_type_circle);
+    de_ecs_verbose = prev_de_ecs_verbose;
 
     st->nsvg_img = nsvgParseFromFile(svg_fname, "px", 96.0f);
     assert(st->nsvg_img);
@@ -467,7 +572,7 @@ static void load(Stage_shot *st, const char *svg_fname) {
 
     float y = -200.;
 
-    box_create(st->r, &st->wctx, (Rectangle) { 50., y, 40., 10., });
+    box_create(st->r, &st->wctx, (Rectangle) { -50., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 250., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 450., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 650., y, 40., 10., });
@@ -488,11 +593,74 @@ static void load(Stage_shot *st, const char *svg_fname) {
 
 static void stage_shot_init(struct Stage_shot *st) {
     //load(st, "assets/magic_level_04.svg");
-    load(st, "assets/magic_level_03.svg");
+    //load(st, "assets/magic_level_03.svg");
+    load(st, "assets/magic_level_05.svg");
 }
 
+// TODO: Сделать поворот уровня(изменение вектора гравитации) с инерцией.
 static void rotate(Stage_shot *st, const float dangle) {
+
+    /*
+    {{{
+    How to use:
+    The four inputs t,b,c,d are defined as follows:
+    t = current time (in any unit measure, but same unit as duration)
+    b = starting value to interpolate
+    c = the total change in value of b that needs to occur
+    d = total time it should take to complete (duration)
+
+    Example:
+
+    int currentTime = 0;
+    int duration = 100;
+    float startPositionX = 0.0f;
+    float finalPositionX = 30.0f;
+    float currentPositionX = startPositionX;
+
+    while (currentPositionX < finalPositionX)
+    {
+        currentPositionX = EaseSineIn(currentTime, startPositionX, finalPositionX - startPositionX, duration);
+        currentTime++;
+    }
+    }}}
+ */
+
+    static bool started = false;
+    static double time;
+    static double start_angle, final_angle, current_angle;
+    static double duration = 2.;
+
+    if (!started) {
+        time = GetTime();
+        started = true;
+        start_angle = 0.;
+        final_angle = fabs(dangle);
+        current_angle = start_angle;
+        trace(
+            "rotate: started, start_angle %f,"
+            "final_angle %f, current_angle %f\n",
+            start_angle, final_angle, current_angle
+        );
+    }
+
+    if (current_angle < final_angle) {
+        double now = GetTime();
+        current_angle = EaseExpoIn(
+            now - time, start_angle, final_angle - start_angle, duration
+        );
+        time = now;
+    } else {
+        trace("rotate: finished\n");
+        started = false;
+    }
+
+    trace(
+        "rotate: current_angle %f, final_angle %f\n",
+        current_angle, final_angle
+    );
+
     Camera2D *cam = &st->cam;
+    // dangle должен проходить от 0 до dangle
     cam->rotation += dangle;
     b2World_SetGravity(st->wctx.world, calc_gravity(cam->rotation));
 }
@@ -532,9 +700,9 @@ static void stage_shot_update(struct Stage_shot *st) {
 
     // left
     if (IsKeyDown(KEY_Q)) {
-        rotate(st, rot_delta_angle);
+        rotate(st, st->rot_delta_angle);
     } else if (IsKeyDown(KEY_W)) {
-        rotate(st, -rot_delta_angle);
+        rotate(st, -st->rot_delta_angle);
     }
 }
 
@@ -717,6 +885,49 @@ static char *get_selected_svg(Stage_shot *st) {
     return NULL;
 }
 
+static void set_circles_restinition(
+    de_ecs *r, WorldCtx *wctx, float circle_restinition
+) {
+    assert(r);
+    assert(wctx);
+    assert(circle_restinition >= 0 && circle_restinition <= 1.);
+
+    /*
+    de_view_single v = de_view_create_single(r, cp_type_circle);
+    for (; de_view_single_valid(&v); de_view_single_next(&v)) {
+        b2BodyId *bid = de_try_get(r, de_view_single_entity(&v), cp_type_body);
+        if (!bid) continue;
+
+        b2ShapeId shapes[16] = {};
+        size_t shapes_num = sizeof(shapes) / sizeof(shapes[0]);
+        int num = b2Body_GetShapes(*bid, shapes, shapes_num);
+
+        for (int i = 0; i < num; i++) {
+            b2Shape_SetRestitution(shapes[i], circle_restinition);
+        }
+    }
+    */
+
+    de_cp_type types[1] = { cp_type_circle };
+    size_t types_num = sizeof(types) / sizeof(types[0]);
+    de_view v = de_view_create(r, types_num, types);
+    for (; de_view_valid(&v); de_view_next(&v)) {
+        /*b2BodyId *bid = de_try_get(r, de_view_entity(&v), cp_type_body);*/
+        b2BodyId *bid = de_get(r, de_view_entity(&v), cp_type_body);
+        if (!bid) continue;
+
+        assert(b2Body_IsValid(*bid));
+
+        b2ShapeId shapes[16] = {};
+        size_t shapes_num = sizeof(shapes) / sizeof(shapes[0]);
+        int num = b2Body_GetShapes(*bid, shapes, shapes_num);
+
+        for (int i = 0; i < num; i++) {
+            b2Shape_SetRestitution(shapes[i], circle_restinition);
+        }
+    }
+}
+
 static void shot_gui(Stage_shot *st) {
     // {{{
     bool open = true;
@@ -745,9 +956,26 @@ static void shot_gui(Stage_shot *st) {
 
     ImVec2 zero = {};
     if (igButton("switch", zero)) {
-        koh_search_files_shutdown(&st->fsr_svg);
-        koh_search_files(&st->fss_svg);
+        const char *fname = "";
+        unload(st);
+        load(st, fname);
+        /*koh_search_files_shutdown(&st->fsr_svg);*/
+        /*koh_search_files(&st->fss_svg);*/
     }
+
+    bool changed = igSliderFloat(
+        "circles restinition", &st->circle_restinition,
+        0., 1., "%f", 0
+    );
+
+    if (changed) {
+        set_circles_restinition(st->r, &st->wctx, st->circle_restinition);
+    }
+
+    igSliderFloat(
+        "rotation velocity", &st->rot_delta_angle,
+        0., 10., "%f", 0
+    );
 
     igEnd();
     // }}}
