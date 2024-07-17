@@ -309,11 +309,11 @@ static void update(void) {
     ClearBackground(color_background_clear);
 
     hotkey_process(&hk_store);
-
     console_check_editor_mode();
-
     dotool_update(testing_ctx);
     stage_active_update(ss);
+
+    // XXX: Почему не отображается?
     console_write("fps %d\n", GetFPS());
 
     koh_fpsmeter_draw();
