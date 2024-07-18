@@ -1,35 +1,36 @@
 return {
 
+    -- еденица трансляции
     {
+        -- список отклченных для данной сборки зависимостей
         not_dependencies = {
-            "lfs",
-            "resvg",
+            -- LuaFileSystem, имеет проблемы со сборкой на Lua 5.4, требует
+            -- патча исходного кода
+            "lfs",      
+            -- не линкуется статически, приложение требует libresvg.so, но не
+            -- использует 
+            "resvg",    
         },
+        -- результат компиляции и линковки
         artifact = "mgc",
+        -- файл с функцикй main()
         main = "mgc_main.c",
+        -- каталог с исходными текстами
         src = "src",
+        -- исключать следующие имена, можно использовать Lua шаблоны
         exclude = {
             --"t80_stage_empty.c",
         },
+        -- список дефайнов для отладочной сборки
         debug_define = {
             ["BOX2C_SENSOR_SLEEP"] = "1",
         },
+        -- список дефайнов для релизной сборки
         release_define = {
             --["T80_NO_ERROR_HANDLING"] = "1",
             --["KOH_NO_ERROR_HANDLING"] = "1",
         },
     },
-    --]]
-
-    --[[
-    {
-        not_dependencies = {
-            "lfs",
-        },
-        artifact = "export_height2colors",
-        main = "export_height2colors.c",
-        src = "src",
-    },
-    --]]
+    -- конец еденицы трансляции
 
 }
