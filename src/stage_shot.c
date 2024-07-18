@@ -28,6 +28,11 @@
 #include "koh_reasings.h"
 #include "koh_table.h"
 #include "koh_routine.h"
+
+#ifndef KOH_DEP_NO_RLWR
+#include "rlwr.h"
+#endif
+
 // }}}
 
 // Тэг тела, что оно является кружком
@@ -40,7 +45,7 @@ const de_cp_type cp_type_circle = {
     .description = "circle tag",
     .str_repr = NULL,
     // XXX: Падает при initial_cap = 0
-    .initial_cap = 10000,
+    .initial_cap = 20000,
     .on_destroy = NULL,
     .on_emplace = NULL,
     /*.callbacks_flags = DE_CB_ON_DESTROY | DE_CB_ON_EMPLACE,*/
@@ -63,9 +68,14 @@ typedef struct Stage_shot {
     InputGamepadDrawer *gp_drawer;
 
     float             circle_restinition, 
-                      rot_delta_angle;
+                      rot_delta_angle,
+                      grav_len;
 
+#ifdef KOH_DEP_RLWR
+    struct rlwr_t *rlwr; // Луа-состотяние с загруженными биндингами raylib'а
+#endif
     lua_State         *l;
+
     Camera2D          cam;
     NSVGimage         *nsvg_img;
     Rectangle         svg_bound;
@@ -89,6 +99,32 @@ typedef struct Stage_shot {
     // }}}
 } Stage_shot;
 
+// {{{ basic callbacks
+static void stage_shot_init(struct Stage_shot *st);
+static void stage_shot_enter(struct Stage_shot *st);
+static void stage_shot_leave(struct Stage_shot *st);
+static void stage_shot_gui(struct Stage_shot *st);
+static void stage_shot_update(struct Stage_shot *st);
+static void stage_shot_draw(Stage_shot *st);
+static void stage_shot_shutdown(struct Stage_shot *st);
+
+Stage *stage_shot_new(HotkeyStorage *hk_store) {
+    assert(hk_store);
+    struct Stage_shot *st = calloc(1, sizeof(*st));
+    st->parent.data = hk_store;
+
+    st->parent.init = (Stage_callback)stage_shot_init;
+    st->parent.enter = (Stage_callback)stage_shot_enter;
+    st->parent.leave = (Stage_callback)stage_shot_leave;
+    st->parent.gui = (Stage_callback)stage_shot_gui;
+    st->parent.update = (Stage_callback)stage_shot_update;
+    st->parent.draw = (Stage_callback)stage_shot_draw;
+    st->parent.shutdown = (Stage_callback)stage_shot_shutdown;
+
+    return (Stage*)st;
+}
+// }}}
+
 /*
 static void input_init(Stage_shot *st) {
 }
@@ -100,12 +136,12 @@ static void input_shutdown(Stage_shot *st) {
 //static void input_update(Stage_shot *st) {
 //}
 
-const static float grav_len = 9.8; 
+// {{{ TODO: Перенести в структуру Stage_shot
 static bool world_query_AABB = true;
 static bool draw_sensors = false,
             verbose = false;
-
 static int borders_gap_px = 0;
+// }}}
 
 static bool query_world_draw(b2ShapeId shape_id, void* context) {
     //trace("query_world_draw:\n");
@@ -263,6 +299,7 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
 
     de_entity e = de_create(r);
 
+    // Выдает память, но неправильную
     b2BodyId *bid = de_emplace(r, e, cp_type_body);
 
     bool prev_de_ecs_verbose = de_ecs_verbose;
@@ -375,7 +412,12 @@ static void unload(Stage_shot *st) {
         return;
 
     if (st->l) {
+#ifdef KOH_DEP_RLWR
+        rlwr_free(st->rlwr);
+        st->rlwr = NULL;
+#else
         lua_close(st->l);
+#endif
         st->l = NULL;
     }
 
@@ -405,12 +447,12 @@ static void unload(Stage_shot *st) {
     st->loaded = false;
 }
 
-static b2Vec2 calc_gravity(float deg_angle) {
+static void set_gravity(Stage_shot *st, float deg_angle) {
     const float rad_angle = deg_angle * (M_PI / 180.);
 
     b2Vec2 gravity = {};
-    gravity.x = sin(rad_angle) * grav_len;
-    gravity.y = cos(rad_angle) * grav_len;
+    gravity.x = sin(rad_angle) * st->grav_len;
+    gravity.y = cos(rad_angle) * st->grav_len;
 
     /*
     trace(
@@ -419,7 +461,7 @@ static b2Vec2 calc_gravity(float deg_angle) {
     );
     */
 
-    return gravity;
+    b2World_SetGravity(st->wctx.world, gravity);
 }
 
 static int search_file_printer(void *udata, const char *fmt, ...) {
@@ -435,23 +477,60 @@ static int search_file_printer(void *udata, const char *fmt, ...) {
     return ret;
 }
 
-static void load(Stage_shot *st, const char *svg_fname) {
-    assert(st);
-    assert(svg_fname);
-
-    trace("load: svg_fname '%s'\n", svg_fname);
+static void load(Stage_shot *st, const char *fname) {
 
     if (st->loaded) {
         unload(st);
         st->loaded = false;
     }
 
-    // CONSTANTS
+    assert(st);
+    assert(fname);
+
+    st->grav_len = 9.8; 
+
+    char svg_fname[128] = {}, lua_fname[128];
+    sprintf(svg_fname, "%s.svg", fname);
+    sprintf(lua_fname, "%s.lua", fname);
+
+    trace("load: svg_fname '%s'\n", svg_fname);
+
+    // {{{ CONSTANTS
     st->rot_delta_angle = 1.;
     st->circle_restinition = 0.;
-    // END CONSTANTS
+    // }}}
 
-    st->l = luaL_newstate();
+    // {{{ Lua state 
+    lua_State **l = &st->l;
+
+#ifdef KOH_DEP_RLWR
+    rlwl = rlwr_new();
+    *l = rlwr_state(rlwr);
+#else
+    *l = luaL_newstate();
+    luaL_openlibs(*l);
+#endif
+
+    int ret = luaL_loadfile(*l, lua_fname);
+    if (ret != LUA_OK)
+        trace(
+            "load: load file '%s' return code %d with %s\n",
+            lua_fname, ret, lua_tostring(*l, -1)
+        );
+    else {
+         ret = lua_pcall(*l, 0, LUA_MULTRET, 0);
+         if (ret != LUA_OK) {
+            trace(
+                "load: pcall file '%s' return code %d with %s\n",
+                lua_fname, ret, lua_tostring(*l, -1)
+            );
+         } else
+             trace("load: script loaded\n");
+    }
+
+    //if (!ret) {
+        //trace("load: script not loaded, '%s'\n", lua_tostring(st->l, -1));
+    //}
 
     st->kb_drawer = input_kb_new(&(struct InputKbMouseDrawerSetup) {
         .btn_width = 70.,
@@ -462,10 +541,10 @@ static void load(Stage_shot *st, const char *svg_fname) {
 
     st->sensors_killer = set_new(NULL);
 
+    // {{{ File search setup
     st->fss_svg.deep = 2;
     st->fss_svg.path = "assets";
     st->fss_svg.regex_pattern = ".*\\.svg$";
-    //st->fss_svg.regex_pattern = ".*svg";
     st->fss_svg.on_search_begin = svg_begin_search;
     st->fss_svg.on_search_end = svg_end_search;
     st->fss_svg.on_shutdown = svg_shutdown_selected;
@@ -473,6 +552,7 @@ static void load(Stage_shot *st, const char *svg_fname) {
 
     koh_search_files_shutdown(&st->fsr_svg);
     st->fsr_svg = koh_search_files(&st->fss_svg);
+    // }}}
 
     //koh_search_files_print(&st->fsr_svg);
     char buf[1024 * 5] = {};
@@ -491,9 +571,10 @@ static void load(Stage_shot *st, const char *svg_fname) {
     bool prev_de_ecs_verbose = de_ecs_verbose;
     de_ecs_verbose = true;
 
-    // HACK:
-    cp_type_body.initial_cap = 10000;
-    cp_type_shape_render_opts.initial_cap = 10000;
+    // HACK:Сделать так, что-бы работало без начальной установки 
+    // большой вместимости
+    cp_type_body.initial_cap = 20000;
+    cp_type_shape_render_opts.initial_cap = 20000;
 
     // Попробуй закомметировать следущую строчку.
     koh_cp_types_register(st->r);
@@ -507,7 +588,6 @@ static void load(Stage_shot *st, const char *svg_fname) {
     assert(st->nsvg_img);
 
     st->xrng = xorshift32_init();
-    st->gravity = calc_gravity(st->cam.rotation);
 
     b2WorldDef wd = b2DefaultWorldDef();
     wd.enableContinous = true;
@@ -516,11 +596,12 @@ static void load(Stage_shot *st, const char *svg_fname) {
 
     world_init(&(struct WorldCtxSetup) {
         .xrng = &st->xrng,
-        .width = 0,  // Устанавливаются позже в terr_on_new
-        .height = 0, // Устанавливаются позже в terr_on_new
+        .width = 0,
+        .height = 0,
         .wd = &wd,
-
     }, &st->wctx);
+
+    set_gravity(st, st->cam.rotation);
 
     svg_parse(st->nsvg_img, body_creator, body_creator_next_path,
         &(struct CreatorCtx) {
@@ -528,26 +609,6 @@ static void load(Stage_shot *st, const char *svg_fname) {
             .st = st,
     });
     
-    //*/
-
-    /*
-    Vector2 points[1024] = {};
-    int points_num = 0, points_cap = sizeof(points) / sizeof(points[0]);
-    svg_parse_segments(
-        st->nsvg_img, 10., points, &points_num, points_cap,
-        parse_segment, st
-    );
-
-    trace("stage_shot_init: points_num %d\n", points_num);
-    WorldCtx *wctx = &st->wctx;
-    Vector2 last = points[0];
-    for (int i = 1; i < points_num; i++) {
-        b2Vec2 p1 = Vector2_to_Vec2(last), p2 = Vector2_to_Vec2(points[i]);
-        segment_create(st->r, wctx, p1, p2);
-        last = points[i];
-    }
-    */
-
     trace(
         "stage_shot_init: svg size %fx%f\n",
         st->nsvg_img->width,
@@ -556,14 +617,7 @@ static void load(Stage_shot *st, const char *svg_fname) {
     st->svg_bound.width = st->nsvg_img->width;
     st->svg_bound.height = st->nsvg_img->height;
 
-    /*
-    segment_create(
-        st->r, &st->wctx,
-        (b2Vec2) { 0., 0. },
-        (b2Vec2) { GetScreenWidth(), GetScreenHeight(), }
-    );
-    */
-
+    // TODO: Почему-то не отображается
     segment_create(
         st->r, &st->wctx,
         (b2Vec2) { 0., st->nsvg_img->height },
@@ -592,13 +646,14 @@ static void load(Stage_shot *st, const char *svg_fname) {
 }
 
 static void stage_shot_init(struct Stage_shot *st) {
-    //load(st, "assets/magic_level_04.svg");
-    //load(st, "assets/magic_level_03.svg");
-    load(st, "assets/magic_level_05.svg");
+    //load(st, "assets/magic_level_04");
+    //load(st, "assets/magic_level_03");
+    load(st, "assets/magic_level_05");
 }
 
 // TODO: Сделать поворот уровня(изменение вектора гравитации) с инерцией.
 static void rotate(Stage_shot *st, const float dangle) {
+    // {{{
 
     /*
     {{{
@@ -625,6 +680,7 @@ static void rotate(Stage_shot *st, const float dangle) {
     }}}
  */
 
+    /*
     static bool started = false;
     static double time;
     static double start_angle, final_angle, current_angle;
@@ -659,10 +715,14 @@ static void rotate(Stage_shot *st, const float dangle) {
         current_angle, final_angle
     );
 
+    */
+
     Camera2D *cam = &st->cam;
     // dangle должен проходить от 0 до dangle
     cam->rotation += dangle;
-    b2World_SetGravity(st->wctx.world, calc_gravity(cam->rotation));
+
+    set_gravity(st, cam->rotation);
+    // }}}
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
@@ -688,6 +748,17 @@ static void stage_shot_update(struct Stage_shot *st) {
     });
     world_step(&st->wctx);
 
+    lua_State *l = st->l;
+    const char *func_name = "update";
+    lua_getglobal(l, func_name);
+    if (lua_pcall(l, 0, 0, 0) != LUA_OK)  {
+        trace(
+            "stage_shot_update: call '%s' was failed with '%s'\n", 
+            func_name, lua_tostring(l, -1)
+        );
+        lua_pop(l, 1); // скидываю сообщение об ошибке со стека
+    } else {
+    }
 
     if (IsKeyDown(KEY_C)) {
         float y = -200.;
@@ -977,6 +1048,15 @@ static void shot_gui(Stage_shot *st) {
         0., 10., "%f", 0
     );
 
+    changed = igSliderFloat(
+        "grav_len", &st->grav_len,
+        -100., 100., "%f", 0
+    );
+
+    if (changed) {
+        set_gravity(st, st->cam.rotation);
+    }
+
     igEnd();
     // }}}
 }
@@ -1230,19 +1310,3 @@ static void stage_shot_shutdown(struct Stage_shot *st) {
     unload(st);
 }
 
-Stage *stage_shot_new(HotkeyStorage *hk_store) {
-    assert(hk_store);
-    struct Stage_shot *st = calloc(1, sizeof(*st));
-    st->parent.data = hk_store;
-
-    st->parent.init = (Stage_callback)stage_shot_init;
-    st->parent.enter = (Stage_callback)stage_shot_enter;
-    st->parent.leave = (Stage_callback)stage_shot_leave;
-
-    st->parent.gui = (Stage_callback)stage_shot_gui;
-    st->parent.update = (Stage_callback)stage_shot_update;
-    st->parent.draw = (Stage_callback)stage_shot_draw;
-    st->parent.shutdown = (Stage_callback)stage_shot_shutdown;
-
-    return (Stage*)st;
-}
