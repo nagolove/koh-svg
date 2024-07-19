@@ -532,19 +532,20 @@ int main(int argc, char **argv) {
 #else
     //do_script();
     dotool_send_signal(testing_ctx);
-    // TODO: Движение танка и вращение турелей сделать с учетом GetFrameTime()
+
     SetTargetFPS(120); 
     while (!WindowShouldClose() && !koh_cmn()->quit) {
         update();
     }
+
 #endif
 
+    stage_shutdown(ss);// добавить в систему инициализации
     koh_music_shutdown();       // добавить в систему инициализации
     koh_fpsmeter_shutdown(); // добавить в систему инициализации
     koh_render_shutdown();// добавить в систему инициализации
     console_shutdown();// добавить в систему инициализации
     hotkey_shutdown(&hk_store);// добавить в систему инициализации, void*
-    stage_shutdown(ss);// добавить в систему инициализации
     if (ss) {
         stage_free(ss);
         ss = NULL;

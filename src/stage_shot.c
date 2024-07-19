@@ -1,5 +1,4 @@
 // vim: set colorcolumn=85
-// de_ecs состояние
 // vim: fdm=marker
 #include "stage_shot.h"
 
@@ -29,7 +28,7 @@
 #include "koh_table.h"
 #include "koh_routine.h"
 
-#ifndef KOH_DEP_NO_RLWR
+#ifndef KOH_NO_RLWR
 #include "rlwr.h"
 #endif
 
@@ -71,7 +70,7 @@ typedef struct Stage_shot {
                       rot_delta_angle,
                       grav_len;
 
-#ifdef KOH_DEP_RLWR
+#ifdef KOH_RLWR
     struct rlwr_t *rlwr; // Луа-состотяние с загруженными биндингами raylib'а
 #endif
     lua_State         *l;
@@ -227,6 +226,11 @@ static void body_creator_next_path(void *udata) {
     trace("body_creator_next_path:\n");
     struct CreatorCtx *ctx = udata;
     ctx->last_used = false;
+
+    //WorldCtx *wctx = &ctx->st->wctx;
+    //Stage_shot *st = ctx->st;
+
+    //segment_create(st->r, wctx, ctx->last, (b2Vec2) { x, y });
 }
 
 static void body_creator(float x, float y, void *udata) {
@@ -235,25 +239,6 @@ static void body_creator(float x, float y, void *udata) {
     Stage_shot *st = ctx->st;
     //trace("body_creator:\n");
     if (ctx->last_used) {
-
-        /*
-        trace(
-            "body_creator: start %s, end %s\n",
-            b2Vec2_to_str(ctx->last),
-            b2Vec2_to_str((b2Vec2) { x, y })
-        );
-        */
-
-        //spawn_segment(
-            //wctx,
-            //&(struct SegmentSetup) {
-                //.start = ctx->last,
-                //.end = (b2Vec2) { x, y },
-                ////.color = pallete_get_random32(&st->pallete, st->wctx.xrng),
-                //.color = RED,
-                //.r = st->r,
-        //});
-
         segment_create(st->r, wctx, ctx->last, (b2Vec2) { x, y });
     } else {
         ctx->last_used = true;
@@ -344,6 +329,7 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     return e;
 }
 
+/*
 static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     assert(r);
 
@@ -370,10 +356,11 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     //b2CreateSegmentShape(bid, &sd, &seg);
     b2CreatePolygonShape(*bid, &sd, &poly);
 
-    /*trace("box_create: created\n");*/
+    //trace("box_create: created\n");
 
     return e;
 }
+*/
 
 /*
 static void parse_segment(Vector2 p1, Vector2 p2, void *udata) {
@@ -412,7 +399,7 @@ static void unload(Stage_shot *st) {
         return;
 
     if (st->l) {
-#ifdef KOH_DEP_RLWR
+#ifdef KOH_RLWR
         rlwr_free(st->rlwr);
         st->rlwr = NULL;
 #else
@@ -443,6 +430,8 @@ static void unload(Stage_shot *st) {
         set_free(st->sensors_killer);
         st->sensors_killer = NULL;
     }
+
+    //input_gp_free(st->gp_drawer);
 
     st->loaded = false;
 }
@@ -477,6 +466,43 @@ static int search_file_printer(void *udata, const char *fmt, ...) {
     return ret;
 }
 
+static int l_sensor_add(lua_State *l) {
+    printf("l_sensor_add:\n");
+
+    // Проверка и получение строки (первый аргумент)
+    const char *str = luaL_checkstring(l, 1);
+
+    // Проверка и получение таблицы (второй аргумент)
+    luaL_checktype(l, 2, LUA_TTABLE);
+    // Можно использовать таблицу по индексу 2
+
+    // Проверка и получение функции обратного вызова (третий аргумент)
+    luaL_checktype(l, 3, LUA_TFUNCTION);
+
+    // Выполнение действия с аргументами (пример)
+    printf("String: %s\n", str);
+
+    /*
+
+    // Вызов функции обратного вызова с одним аргументом (строкой)
+    lua_pushvalue(l, 3);  // Поместить функцию на вершину стека
+    lua_pushstring(l, str);  // Поместить строку на вершину стека
+    if (lua_pcall(l, 1, 0, 0) != LUA_OK) {
+        // Обработка ошибки вызова
+        luaL_error(l, "Error calling callback function: %s", lua_tostring(l, -1));
+    }
+
+    */
+
+    // Возвращаемое значение функции (в данном примере ничего не возвращаем)
+    return 0;
+}
+
+const static luaL_Reg lua_funcs[] = {
+    { "sensor_add", l_sensor_add, },
+    { NULL, NULL},
+};
+
 static void load(Stage_shot *st, const char *fname) {
 
     if (st->loaded) {
@@ -503,13 +529,16 @@ static void load(Stage_shot *st, const char *fname) {
     // {{{ Lua state 
     lua_State **l = &st->l;
 
-#ifdef KOH_DEP_RLWR
-    rlwl = rlwr_new();
-    *l = rlwr_state(rlwr);
+#ifdef KOH_RLWR
+    trace("load: rlwr created\n");
+    st->rlwr = rlwr_new();
+    *l = rlwr_state(st->rlwr);
 #else
     *l = luaL_newstate();
     luaL_openlibs(*l);
 #endif
+
+    //luaL_setfuncs(*l, lua_funcs, 0);
 
     int ret = luaL_loadfile(*l, lua_fname);
     if (ret != LUA_OK)
@@ -531,6 +560,7 @@ static void load(Stage_shot *st, const char *fname) {
     //if (!ret) {
         //trace("load: script not loaded, '%s'\n", lua_tostring(st->l, -1));
     //}
+    // }}}
 
     st->kb_drawer = input_kb_new(&(struct InputKbMouseDrawerSetup) {
         .btn_width = 70.,
@@ -624,12 +654,14 @@ static void load(Stage_shot *st, const char *fname) {
         (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, }
     );
 
-    float y = -200.;
 
+    /*
+    //float y = -200.;
     box_create(st->r, &st->wctx, (Rectangle) { -50., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 250., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 450., y, 40., 10., });
     box_create(st->r, &st->wctx, (Rectangle) { 650., y, 40., 10., });
+    */
 
     timerman_add(st->tm, (struct TimerDef) {
         .duration = 1.5,
@@ -725,6 +757,23 @@ static void rotate(Stage_shot *st, const float dangle) {
     // }}}
 }
 
+/*
+static void lua_call(lua_State *l, const char *fname) {
+    //
+    lua_State *l = st->l;
+    const char *func_name = "update";
+    lua_getglobal(l, func_name);
+    if (lua_pcall(l, 0, 0, 0) != LUA_OK)  {
+        trace(
+                "stage_shot_update: call '%s' was failed with '%s'\n", 
+                func_name, lua_tostring(l, -1)
+             );
+        lua_pop(l, 1); // скидываю сообщение об ошибке со стека
+    } else {
+    }
+}
+*/
+
 static void stage_shot_update(struct Stage_shot *st) {
     b2SensorEvents sensor_events = b2World_GetSensorEvents(st->wctx.world);
     for (int i = 0; i < sensor_events.beginCount; i++) {
@@ -748,25 +797,15 @@ static void stage_shot_update(struct Stage_shot *st) {
     });
     world_step(&st->wctx);
 
-    lua_State *l = st->l;
-    const char *func_name = "update";
-    lua_getglobal(l, func_name);
-    if (lua_pcall(l, 0, 0, 0) != LUA_OK)  {
-        trace(
-            "stage_shot_update: call '%s' was failed with '%s'\n", 
-            func_name, lua_tostring(l, -1)
-        );
-        lua_pop(l, 1); // скидываю сообщение об ошибке со стека
-    } else {
-    }
+    //lua_call(l, "update);
 
     if (IsKeyDown(KEY_C)) {
         float y = -200.;
         float radius = 4.;
         circle_create(st->r, &st->wctx, (Rectangle) { 50., y, radius, 10., });
-        circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
-        circle_create(st->r, &st->wctx, (Rectangle) { 450., y, radius, 10., });
-        circle_create(st->r, &st->wctx, (Rectangle) { 650., y, radius, 10., });
+        //circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
+        //circle_create(st->r, &st->wctx, (Rectangle) { 450., y, radius, 10., });
+        //circle_create(st->r, &st->wctx, (Rectangle) { 650., y, radius, 10., });
     }
 
     // left
@@ -1228,7 +1267,7 @@ static void render_pass_svg(NSVGimage *img, float scale) {
 	NSVGshape *shape;
 	NSVGpath  *path;
 
-    Vector2 points[1024] = {};
+    Vector2 points[1024 * 2] = {};
     int points_cap = sizeof(points) / sizeof(points[0]);
     int points_num = 0;
 
@@ -1244,16 +1283,6 @@ static void render_pass_svg(NSVGimage *img, float scale) {
             const float thick = 5.;
             unsigned char *components = ((unsigned char*)&shape->stroke.color);
 
-            /*
-            trace(
-                "pass_svg: components { %d, %d, %d, %d }\n",
-                components[0],
-                components[1],
-                components[2],
-                components[3]
-            );
-            */
-
             Color color = {
                 .r = components[0],
                 .g = components[1],
@@ -1264,6 +1293,12 @@ static void render_pass_svg(NSVGimage *img, float scale) {
             for (int i = 0; i + 1 < points_num; i++) {
                 DrawLineEx(points[i], points[i + 1], thick, color);
             }
+
+            // TODO: Рисовать недостающий сегмент
+            //DrawLineEx(points[points_num - 2], points[points_num - 1], thick, color);
+            //DrawLineEx(points[0], points[points_num - 1], thick, color);
+            //DrawLineEx(points[0], points[1], thick, color);
+
             points_num = 0;
         }
     }
