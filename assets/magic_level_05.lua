@@ -1,3 +1,5 @@
+-- vim: set colorcolumn=85
+-- vim: fdm=marker
 
 package.path = package.path .. ";./*.lua"
 
@@ -6,7 +8,7 @@ print("fith level script, your are welcome!")
 local inspect = require "inspect"
 --local tabular = require "tabular".show
 
-local function sensor_start()
+local function on_sensor()
     print("sensor_start:")
 end
 
@@ -15,8 +17,21 @@ function load()
     print("load in script");
 
     -- Добавляет сенсор с функцией обратного вызова
-    mgc.sensor_add("circle", { x = 100, y = 100, radius = 100 }, sensor_start)
-    mgc.sensor_add("circle", { x = 1000, y = 700, radius = 700 }, sensor_start)
+    mgc.sensor_add(
+        "start",
+        { x = 100, y = 100, radius = 100 },
+        on_sensor
+    )
+    mgc.sensor_add(
+        "intermediate",
+        { x = 1000, y = 700, radius = 700 },
+        on_sensor
+    )
+    mgc.sensor_add(
+        "end",
+        { x = 1000, y = 700, radius = 700 },
+        on_sensor
+    )
 end
 
 --print("_G", inspect(_G))
@@ -32,7 +47,7 @@ function update()
     --print("update: dt", GetFrameTime())
 end
 
-local fnt_size = 1000
+local fnt_size = 200
 --local fnt = LoadFont("assets/fonts/jetbrainsmono.ttf", fnt_size)
 local fnt = LoadFont("assets/fonts/jetbrainsmono.ttf")
 local pos = Vector2(200, 200)
@@ -42,6 +57,7 @@ local msg = "Congrats! You created your first window!";
 local msg_width = MeasureTextEx(fnt, msg, fnt_size, 0.)
 
 function draw_pre()
+    -- {{{
     --RLAPI void DrawTextEx(Font font, const char *text, Vector2 position, float fontSize, float spacing, Color tint); // Draw text using font and additional parameters
     --pos.x
 --RLAPI void DrawTextPro(Font font, const char *text, Vector2 position, Vector2 origin, float rotation, float fontSize, float spacing, Color tint); // Draw text using Font and pro parameters (rotation)
@@ -58,6 +74,7 @@ function draw_pre()
     )
 
     --[[
+    --[[
     DrawTextEx(
         --GetFontDefault(),
         fnt,
@@ -70,6 +87,7 @@ function draw_pre()
     --]]
 
     rotation = (rotation + 1) % 360
+    -- }}}
 end
 
 function draw_post()
