@@ -27,6 +27,7 @@
 #include "koh_reasings.h"
 #include "koh_table.h"
 #include "koh_routine.h"
+#include "koh_inotifier.h"
 
 #ifndef KOH_NO_RLWR
 #include "rlwr.h"
@@ -34,7 +35,13 @@
 
 // }}}
 
-// Тэг тела, что оно является кружком
+typedef struct Sensor {
+    char name[128];
+} Sensor;
+
+static const uint64_t stage_shot_uniq_id = 4294967311;
+
+// Тэг тела, что оно является игровым кружком
 const de_cp_type cp_type_circle = {
     // TODO: Добавит проверку при регистрации компонента на повторение cp_id
     .cp_id = 0, 
@@ -50,8 +57,23 @@ const de_cp_type cp_type_circle = {
     /*.callbacks_flags = DE_CB_ON_DESTROY | DE_CB_ON_EMPLACE,*/
 };
 
+// Тэг тела, что оно является сенсором который обрабатывается скриптом
+const de_cp_type cp_type_sensor = {
+    .cp_id = 0, 
+    .cp_sizeof = sizeof(Sensor),
+    .name = "sensor",
+    .description = "script controlled sensor",
+    .str_repr = NULL,
+    // XXX: Падает при initial_cap = 0
+    .initial_cap = 1000,
+    .on_destroy = NULL,
+    .on_emplace = NULL,
+    /*.callbacks_flags = DE_CB_ON_DESTROY | DE_CB_ON_EMPLACE,*/
+};
+
 typedef struct Stage_shot {
     Stage             parent;
+    uint64_t          uniq_id;
     // {{{
 
     /* 
@@ -67,16 +89,23 @@ typedef struct Stage_shot {
     InputGamepadDrawer *gp_drawer;
 
     // "sensor_name" -> int (lua reference for function() end)
-    HTable            *sensor_name2func;
+    //HTable            *sensor_name2func;
 
     float             circle_restinition, 
                       rot_delta_angle,
-                      grav_len;
+                      grav_len,
+                      line_thick;
+
+    bool              world_query_AABB, 
+                      draw_sensors, 
+                      verbose;
+    int               borders_gap_px;
 
 #ifdef KOH_RLWR
     struct rlwr_t *rlwr; // Луа-состотяние с загруженными биндингами raylib'а
 #endif
     lua_State         *l;
+    char              lua_fname[256];
 
     Camera2D          cam;
     NSVGimage         *nsvg_img;
@@ -102,6 +131,8 @@ typedef struct Stage_shot {
 } Stage_shot;
 
 static void L_call(lua_State *l, const char *func_name);
+static void load(Stage_shot *st, const char *fname);
+static void unload(Stage_shot *st);
 
 // {{{ basic callbacks
 static void stage_shot_init(struct Stage_shot *st);
@@ -114,7 +145,7 @@ static void stage_shot_shutdown(struct Stage_shot *st);
 
 Stage *stage_shot_new(HotkeyStorage *hk_store) {
     assert(hk_store);
-    struct Stage_shot *st = calloc(1, sizeof(*st));
+    Stage_shot *st = calloc(1, sizeof(*st));
     st->parent.data = hk_store;
 
     st->parent.init = (Stage_callback)stage_shot_init;
@@ -124,6 +155,8 @@ Stage *stage_shot_new(HotkeyStorage *hk_store) {
     st->parent.update = (Stage_callback)stage_shot_update;
     st->parent.draw = (Stage_callback)stage_shot_draw;
     st->parent.shutdown = (Stage_callback)stage_shot_shutdown;
+
+    st->uniq_id = stage_shot_uniq_id;
 
     return (Stage*)st;
 }
@@ -140,18 +173,21 @@ static void input_shutdown(Stage_shot *st) {
 //static void input_update(Stage_shot *st) {
 //}
 
-// {{{ TODO: Перенести в структуру Stage_shot
-static bool world_query_AABB = true;
-static bool draw_sensors = false,
-            verbose = false;
-static int borders_gap_px = 0;
-// }}}
+void inotify_script_changed(const char *fname, void *udata) {
+    trace("inotify_script_changed: fname '%s'\n", fname);
+    inotifier_watch(fname, inotify_script_changed, udata);
+
+    // XXX: Сперва проверить корректность загрузки скрипта, 
+    // только потом выгружать сцену
+    Stage_shot *st = udata;
+    load(st, fname);
+}
 
 static bool query_world_draw(b2ShapeId shape_id, void* context) {
     //trace("query_world_draw:\n");
     struct Stage_shot *st = context;
 
-    if (!draw_sensors) {
+    if (!st->draw_sensors) {
         if (b2Shape_IsSensor(shape_id)) {
             //trace("query_world_draw: shape is sensor\n");
             return true;
@@ -403,6 +439,8 @@ static void unload(Stage_shot *st) {
     if (!st->loaded)
         return;
 
+    inotifier_watch_remove(st->lua_fname);
+
     if (st->l) {
 #ifdef KOH_RLWR
         rlwr_free(st->rlwr);
@@ -413,10 +451,12 @@ static void unload(Stage_shot *st) {
         st->l = NULL;
     }
 
+    /*
     if (st->sensor_name2func) {
         htable_free(st->sensor_name2func);
         st->sensor_name2func = NULL;
     }
+    */
 
     if (st->tm) {
         timerman_free(st->tm);
@@ -495,7 +535,65 @@ static void *L_get_registry_ptr(lua_State *l, const char *name) {
     return ptr;
 }
 
+// Вызвать Луа функцию обратного вызова по имени сенсора
 static void L_sensor_call(lua_State *l, const char *sensor_name) {
+    trace("L_sensor_call: sensor_name '%s'\n", sensor_name);
+
+    Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+    assert(st);
+
+    trace("L_sensor_call: 0 [%s]\n", stack_dump(l));
+
+    char full_sensor_name[128] = {};
+    sprintf(full_sensor_name, "sensor_%s", sensor_name);
+    lua_pushstring(l, full_sensor_name);
+    lua_gettable(l, LUA_REGISTRYINDEX);
+    assert(lua_isfunction(l, -1));
+
+    trace("L_sensor_call: 1 [%s]\n", stack_dump(l));
+
+    //lua_pushvalue(l, 3);  // Поместить функцию на вершину стека
+    //lua_pushstring(l, str);  // Поместить аргумент на вершину стека
+    if (lua_pcall(l, 1, 0, 0) != LUA_OK) {
+        // Обработка ошибки вызова
+        trace(
+            "L_sensor_call: error calling callback function: %s",
+            sensor_name
+        );
+        exit(EXIT_FAILURE);
+    }
+
+    trace("L_sensor_call: 2 [%s]\n", stack_dump(l));
+
+    lua_pop(l, 1);
+
+    //lua_pushstring(l, full_sensor_name);
+}
+
+static int l_gravity_set(lua_State *l) {
+    assert(lua_islightuserdata(l, 1));
+
+    Vector2 *gravity = luaL_testudata(l, 1, "Vector2");
+
+    if (gravity) {
+        trace("l_setgravity: gravity %s\n", Vector2_tostr(*gravity));
+
+        Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+        assert(st);
+
+        b2World_SetGravity(st->wctx.world, Vector2_to_Vec2(*gravity));
+    } else {
+        trace("l_setgravity: gravity is NULL, type mismatch\n");
+    }
+
+    return 0;
+}
+
+static de_entity sensor_add_circle(
+    de_ecs *r, float radius, b2Vec2 pos
+) {
+    trace("sensor_add_circle:\n");
+    return de_null;
 }
 
 static int l_sensor_add(lua_State *l) {
@@ -527,13 +625,8 @@ static int l_sensor_add(lua_State *l) {
         sensor_name, stack_dump(l)
     );
 
-    /*
     Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
-    int *ref_func = htable_get(
-        st->sensor_name2func, sensor_name, sizeof(ref_func), NULL
-    );
-    assert(*ref_func);
-    */
+    assert(st);
 
     /*
 // Освобождение предыдущей ссылки на функцию, если она существует
@@ -560,12 +653,17 @@ static int l_sensor_add(lua_State *l) {
 
     printf("l_sensor_add: 2 [%s]\n", stack_dump(l));
 
+    float radius = 0.;
+    b2Vec2 pos = {};
+    sensor_add_circle(st->r, radius, pos);
+
     // Возвращаемое значение функции (в данном примере ничего не возвращаем)
     return 0;
 }
 
 const static luaL_Reg lua_funcs[] = {
     { "sensor_add", l_sensor_add, },
+    { "gravity_set", l_gravity_set, },
     { NULL, NULL},
 };
 
@@ -602,6 +700,9 @@ static void load(Stage_shot *st, const char *fname) {
     char svg_fname[128] = {}, lua_fname[128];
     sprintf(svg_fname, "%s.svg", fname);
     sprintf(lua_fname, "%s.lua", fname);
+
+    strncpy(st->lua_fname, lua_fname, sizeof(st->lua_fname));
+    inotifier_watch(lua_fname, inotify_script_changed, st);
 
     trace("load: svg_fname '%s'\n", svg_fname);
 
@@ -707,6 +808,7 @@ static void load(Stage_shot *st, const char *fname) {
     // Побочное поведение - следующий код регистрации должен быть до 
     // создания сущностей.
     de_ecs_register(st->r, cp_type_circle);
+    de_ecs_register(st->r, cp_type_sensor);
     de_ecs_verbose = prev_de_ecs_verbose;
 
     st->nsvg_img = nsvgParseFromFile(svg_fname, "px", 96.0f);
@@ -735,7 +837,7 @@ static void load(Stage_shot *st, const char *fname) {
     });
     
     trace(
-        "stage_shot_init: svg size %fx%f\n",
+        "load: svg size %fx%f\n",
         st->nsvg_img->width,
         st->nsvg_img->height
     );
@@ -760,6 +862,7 @@ static void load(Stage_shot *st, const char *fname) {
 
     timerman_add(st->tm, (struct TimerDef) {
         .duration = 1.5,
+        .sz = 0,
         .udata = st,
         .on_update = tmr_spawn_circle_update,
         .on_stop = tmr_spawn_circle_stop,
@@ -769,7 +872,7 @@ static void load(Stage_shot *st, const char *fname) {
     cam->target.x = st->nsvg_img->width / 2.;
     cam->target.y = st->nsvg_img->height / 2.;
 
-    st->sensor_name2func = htable_new(NULL);
+    //st->sensor_name2func = htable_new(NULL);
 
     L_call(st->l, "load");
 
@@ -779,6 +882,13 @@ static void load(Stage_shot *st, const char *fname) {
 static void stage_shot_init(struct Stage_shot *st) {
     //load(st, "assets/magic_level_04");
     //load(st, "assets/magic_level_03");
+
+    st->world_query_AABB = true;
+    st->draw_sensors = false,
+    st->verbose = false;
+    st->borders_gap_px = 0;
+    st->line_thick = 10.;
+
     load(st, "assets/magic_level_05");
 }
 
@@ -874,12 +984,26 @@ static void L_call(lua_State *l, const char *func_name) {
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
+    de_ecs *r = st->r;
     b2SensorEvents sensor_events = b2World_GetSensorEvents(st->wctx.world);
     for (int i = 0; i < sensor_events.beginCount; i++) {
         b2SensorBeginTouchEvent event = sensor_events.beginEvents[i];
+
+        // XXX: Или лучше сделать через проверку сущности прикрепленной к телу
+        // на тип добавленного к сущности компонента?
+        // Преимущества - унификация
+        /*
         size_t sz = sizeof(event.sensorShapeId);
         if (set_exist(st->sensors_killer, &event.sensorShapeId, sz)) {
             trace("stage_shot_update: sensors killer found\n");
+        }
+        */
+
+        de_entity e = (intptr_t)b2Shape_GetUserData(event.sensorShapeId);
+
+        Sensor *sensor = de_try_get(r, e, cp_type_sensor);
+        if (sensor) {
+            L_sensor_call(st->l, sensor->name);
         }
     }
 
@@ -950,9 +1074,9 @@ static void box2d_actions_gui(struct Stage_shot *st) {
 
     //igSliderInt("borders gap", &borders_gap_px, -200, 200, "%d", 0);
 
-    igCheckbox("draw sensors", &draw_sensors);
+    igCheckbox("draw sensors", &st->draw_sensors);
     igCheckbox("render_verbose", &render_verbose);
-    igCheckbox("verbose", &verbose);
+    igCheckbox("verbose", &st->verbose);
 
     if (igButton("apply random impulse to all dyn bodies", (ImVec2){})) {
         bool prev = koh_components_verbose;
@@ -1033,7 +1157,7 @@ static void box2d_actions_gui(struct Stage_shot *st) {
 
     if (igButton("spawn borders", (ImVec2){})) {
         remove_borders(&st->wctx, st->r, st->borders);
-        spawn_borders(&st->wctx, st->r, st->borders, borders_gap_px);
+        spawn_borders(&st->wctx, st->r, st->borders, st->borders_gap_px);
     }
 
     igSameLine(0., 5.);
@@ -1199,6 +1323,8 @@ static void shot_gui(Stage_shot *st) {
         set_gravity(st, st->cam.rotation);
     }
 
+    igSliderFloat("line thick", &st->line_thick, 1., 20., "%f", 0);
+
     igEnd();
     // }}}
 }
@@ -1351,20 +1477,30 @@ static void render_pass_bound(Stage_shot *st) {
 }
 
 static void render_pass_box2d(Stage_shot *st) {
-    if (!world_query_AABB)
+    if (!st->world_query_AABB)
         return;
 
     //float gap_radius = 100;
     float gap_radius = 0.;
     // Прямоугольник видимой части экрана с учетом масштаба
     b2AABB screen = camera2aabb(&st->cam, gap_radius);
+
+    console_write("st->cam '%s'\n", camera2str(st->cam, false));
+
+    Rectangle rect = aabb2rect(screen);
+    //rect.x += st->cam.target.x;
+    //rect.y += st->cam.target.y;
+    DrawRectangleRec(rect, BLUE);
+
     b2QueryFilter filter = b2DefaultQueryFilter();
     b2World_OverlapAABB(
         st->wctx.world, screen, filter, query_world_draw, st
     );
 }
 
-static void render_pass_svg(NSVGimage *img, float scale) {
+static void render_pass_svg(
+    NSVGimage *img, float scale, float line_thick
+) {
     assert(img);
     assert(scale != 0.);
 	NSVGshape *shape;
@@ -1373,6 +1509,7 @@ static void render_pass_svg(NSVGimage *img, float scale) {
     Vector2 points[1024 * 2] = {};
     int points_cap = sizeof(points) / sizeof(points[0]);
     int points_num = 0;
+    assert(line_thick > 0.);
 
     for (shape = img->shapes; shape != NULL; shape = shape->next) {
         for (path = shape->paths; path != NULL; path = path->next) {
@@ -1383,7 +1520,6 @@ static void render_pass_svg(NSVGimage *img, float scale) {
             );
             //drawControlPts(path->pts, path->npts);
 
-            const float thick = 5.;
             unsigned char *components = ((unsigned char*)&shape->stroke.color);
 
             Color color = {
@@ -1394,7 +1530,10 @@ static void render_pass_svg(NSVGimage *img, float scale) {
             };
 
             for (int i = 0; i + 1 < points_num; i++) {
-                DrawLineEx(points[i], points[i + 1], thick, color);
+                DrawLineEx(points[i], points[i + 1], line_thick, color);
+            }
+            for (int i = 0; i < points_num; i++) {
+                DrawCircleV(points[i], line_thick / 2., color);
             }
 
             // TODO: Рисовать недостающий сегмент
@@ -1435,7 +1574,7 @@ static void stage_shot_draw(Stage_shot *st) {
 
     L_call(st->l, "draw_pre");
 
-    render_pass_svg(st->nsvg_img, 1.);
+    render_pass_svg(st->nsvg_img, 1., st->line_thick);
     render_pass_box2d(st);
     render_pass_bound(st);
 
