@@ -66,6 +66,9 @@ typedef struct Stage_shot {
     InputKbMouseDrawer *kb_drawer;
     InputGamepadDrawer *gp_drawer;
 
+    // "sensor_name" -> int (lua reference for function() end)
+    HTable            *sensor_name2func;
+
     float             circle_restinition, 
                       rot_delta_angle,
                       grav_len;
@@ -97,6 +100,8 @@ typedef struct Stage_shot {
     struct TimerMan   *tm;
     // }}}
 } Stage_shot;
+
+static void L_call(lua_State *l, const char *func_name);
 
 // {{{ basic callbacks
 static void stage_shot_init(struct Stage_shot *st);
@@ -408,6 +413,11 @@ static void unload(Stage_shot *st) {
         st->l = NULL;
     }
 
+    if (st->sensor_name2func) {
+        htable_free(st->sensor_name2func);
+        st->sensor_name2func = NULL;
+    }
+
     if (st->tm) {
         timerman_free(st->tm);
         st->tm = NULL;
@@ -466,11 +476,33 @@ static int search_file_printer(void *udata, const char *fmt, ...) {
     return ret;
 }
 
+static void *L_get_registry_ptr(lua_State *l, const char *name) {
+    assert(l);
+    assert(name);
+    lua_pushstring(l, name);
+    lua_gettable(l, LUA_REGISTRYINDEX);
+
+    if (!lua_islightuserdata(l, -1)) {
+        trace("L_get_registry_ptr: to a islightuserdata\n");
+        exit(EXIT_FAILURE);
+    }
+
+    void *ptr = lua_touserdata(l, -1);
+    lua_pop(l, 1);
+
+    assert(ptr);
+
+    return ptr;
+}
+
+static void L_sensor_call(lua_State *l, const char *sensor_name) {
+}
+
 static int l_sensor_add(lua_State *l) {
-    printf("l_sensor_add:\n");
+    printf("l_sensor_add: 1 [%s]\n", stack_dump(l));
 
     // Проверка и получение строки (первый аргумент)
-    const char *str = luaL_checkstring(l, 1);
+    const char *sensor_name = luaL_checkstring(l, 1);
 
     // Проверка и получение таблицы (второй аргумент)
     luaL_checktype(l, 2, LUA_TTABLE);
@@ -479,8 +511,40 @@ static int l_sensor_add(lua_State *l) {
     // Проверка и получение функции обратного вызова (третий аргумент)
     luaL_checktype(l, 3, LUA_TFUNCTION);
 
-    // Выполнение действия с аргументами (пример)
-    printf("String: %s\n", str);
+    trace(
+        "l_sensor_add: 1 sensor_name '%s', [%s]\n",
+        sensor_name, stack_dump(l)
+    );
+
+    char full_sensor_name[128] = {};
+    sprintf(full_sensor_name, "sensor_%s", sensor_name);
+    lua_pushstring(l, full_sensor_name);
+    lua_pushvalue(l, 3);
+    lua_settable(l, LUA_REGISTRYINDEX);
+
+    trace(
+        "l_sensor_add: 2 sensor_name '%s', [%s]\n",
+        sensor_name, stack_dump(l)
+    );
+
+    /*
+    Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+    int *ref_func = htable_get(
+        st->sensor_name2func, sensor_name, sizeof(ref_func), NULL
+    );
+    assert(*ref_func);
+    */
+
+    /*
+// Освобождение предыдущей ссылки на функцию, если она существует
+    if (callback_ref != LUA_REFNIL) {
+        luaL_unref(L, LUA_REGISTRYINDEX, callback_ref);
+    }
+
+    // Сохранение новой ссылки на функцию
+    lua_pushvalue(L, 1);  // Копирование функции на вершину стека
+    callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);  // Сохранение ссылки
+    */
 
     /*
 
@@ -494,6 +558,8 @@ static int l_sensor_add(lua_State *l) {
 
     */
 
+    printf("l_sensor_add: 2 [%s]\n", stack_dump(l));
+
     // Возвращаемое значение функции (в данном примере ничего не возвращаем)
     return 0;
 }
@@ -502,6 +568,24 @@ const static luaL_Reg lua_funcs[] = {
     { "sensor_add", l_sensor_add, },
     { NULL, NULL},
 };
+
+static void L_set_registry_ptr(lua_State *l, const char *name, void *ptr) {
+
+    trace(
+        "L_set_registry_ptr: 1 name '%s', ptr %p, [%s]\n",
+        name, ptr, stack_dump(l)
+    );
+
+    lua_pushstring(l, name);
+    lua_pushlightuserdata(l, ptr);
+    lua_settable(l, LUA_REGISTRYINDEX);
+
+    trace(
+        "L_set_registry_ptr: 2 name '%s', ptr %p, [%s]\n",
+        name, ptr, stack_dump(l)
+    );
+
+}
 
 static void load(Stage_shot *st, const char *fname) {
 
@@ -538,7 +622,16 @@ static void load(Stage_shot *st, const char *fname) {
     luaL_openlibs(*l);
 #endif
 
-    //luaL_setfuncs(*l, lua_funcs, 0);
+    trace("load: new [%s]\n", stack_dump(*l));
+
+    L_set_registry_ptr(*l, "ptr_stage_shot", st);
+
+    trace("load: set stage ptr [%s]\n", stack_dump(*l));
+
+    luaL_newlib(*l, lua_funcs); 
+    lua_setglobal(*l, "mgc");
+
+    trace("load: setup 'mgc' table [%s]\n", stack_dump(*l));
 
     int ret = luaL_loadfile(*l, lua_fname);
     if (ret != LUA_OK)
@@ -556,6 +649,8 @@ static void load(Stage_shot *st, const char *fname) {
          } else
              trace("load: script loaded\n");
     }
+
+    trace("load: loadfile done [%s]\n", stack_dump(*l));
 
     //if (!ret) {
         //trace("load: script not loaded, '%s'\n", lua_tostring(st->l, -1));
@@ -674,6 +769,10 @@ static void load(Stage_shot *st, const char *fname) {
     cam->target.x = st->nsvg_img->width / 2.;
     cam->target.y = st->nsvg_img->height / 2.;
 
+    st->sensor_name2func = htable_new(NULL);
+
+    L_call(st->l, "load");
+
     st->loaded = true;
 }
 
@@ -757,22 +856,22 @@ static void rotate(Stage_shot *st, const float dangle) {
     // }}}
 }
 
-/*
-static void lua_call(lua_State *l, const char *fname) {
-    //
-    lua_State *l = st->l;
-    const char *func_name = "update";
+// DONE:
+static void L_call(lua_State *l, const char *func_name) {
+    assert(l);
+    //trace("L_call: 1 [%s]\n", stack_dump(l));
     lua_getglobal(l, func_name);
+    //trace("L_call: 2 [%s]\n", stack_dump(l));
     if (lua_pcall(l, 0, 0, 0) != LUA_OK)  {
         trace(
                 "stage_shot_update: call '%s' was failed with '%s'\n", 
                 func_name, lua_tostring(l, -1)
              );
         lua_pop(l, 1); // скидываю сообщение об ошибке со стека
-    } else {
+        exit(EXIT_FAILURE);
     }
+    //trace("L_call: 3 [%s]\n", stack_dump(l));
 }
-*/
 
 static void stage_shot_update(struct Stage_shot *st) {
     b2SensorEvents sensor_events = b2World_GetSensorEvents(st->wctx.world);
@@ -789,15 +888,19 @@ static void stage_shot_update(struct Stage_shot *st) {
             .mouse_btn = MOUSE_BUTTON_RIGHT,
             .cam = &st->cam
     });
+
+    // TODO: Сделать ограничие масштаба для избежания следущей ошибки:
+    // camera2aabb: Assertion `b2AABB_IsValid(aabb)' failed.
     koh_camera_process_mouse_scale_wheel(&(struct CameraProcessScale) {
         //.mouse_btn = MOUSE_BUTTON_LEFT,
         .cam = &st->cam,
         .dscale_value = 0.05,
         .modifier_key_down = KEY_LEFT_SHIFT,
     });
+
     world_step(&st->wctx);
 
-    //lua_call(l, "update);
+    L_call(st->l, "update");
 
     if (IsKeyDown(KEY_C)) {
         float y = -200.;
@@ -1305,13 +1408,7 @@ static void render_pass_svg(NSVGimage *img, float scale) {
 
 }
 
-static void stage_shot_draw(Stage_shot *st) {
-    BeginMode2D(st->cam);
-
-    render_pass_svg(st->nsvg_img, 1.);
-    render_pass_box2d(st);
-    render_pass_bound(st);
-
+static void render_pass_debug(Stage_shot *st) {
     Vector2 center = { st->nsvg_img->width / 2., st->nsvg_img->height / 2.};
     DrawCircleV(center, 30., WHITE);
 
@@ -1331,6 +1428,20 @@ static void stage_shot_draw(Stage_shot *st) {
     WorldCtx *wctx = &st->wctx;
     if (wctx->is_dbg_draw)
         b2World_Draw(wctx->world, &wctx->world_dbg_draw);
+}
+
+static void stage_shot_draw(Stage_shot *st) {
+    BeginMode2D(st->cam);
+
+    L_call(st->l, "draw_pre");
+
+    render_pass_svg(st->nsvg_img, 1.);
+    render_pass_box2d(st);
+    render_pass_bound(st);
+
+    L_call(st->l, "draw_post");
+
+    render_pass_debug(st);
 
     EndMode2D();
 }
