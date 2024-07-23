@@ -28,12 +28,15 @@
 #include "koh_table.h"
 #include "koh_routine.h"
 #include "koh_inotifier.h"
+#include "koh_cammode.h"
 
 #ifndef KOH_NO_RLWR
 #include "rlwr.h"
 #endif
 
 // }}}
+
+#define cleanup(func) __attribute__((cleanup(func)))
 
 typedef struct Sensor {
     char name[128];
@@ -65,7 +68,7 @@ const de_cp_type cp_type_sensor = {
     .description = "script controlled sensor",
     .str_repr = NULL,
     // XXX: Падает при initial_cap = 0
-    .initial_cap = 1000,
+    .initial_cap = 20000,
     .on_destroy = NULL,
     .on_emplace = NULL,
     /*.callbacks_flags = DE_CB_ON_DESTROY | DE_CB_ON_EMPLACE,*/
@@ -91,14 +94,28 @@ typedef struct Stage_shot {
     // "sensor_name" -> int (lua reference for function() end)
     //HTable            *sensor_name2func;
 
-    float             circle_restinition, 
+    float             // зазор отсечения для области камеры
+                      gap_radius,
+                      // упругость шариков 0..1 
+                      circle_restinition, 
+                      // как быстро поворачивать уровень(изменять направление
+                      // вектора гравитации)
                       rot_delta_angle,
+                      // длина вектора гравитации
                       grav_len,
-                      line_thick;
+                      // толщина линии рисования уровня
+                      line_thick,
 
-    bool              world_query_AABB, 
-                      draw_sensors, 
-                      verbose;
+                      circle_radius;
+
+    bool              // выполнять запрос физического движка для рисования
+                      world_query_AABB, 
+                      // рисовать сенсоры в запросе физического движка
+                      draw_sensors,  
+                      // проверочный вывод в консоль
+                      verbose,       
+                      // рисовать область камеры
+                      cam_draw_rect; 
     int               borders_gap_px;
 
 #ifdef KOH_RLWR
@@ -696,6 +713,11 @@ static void load(Stage_shot *st, const char *fname) {
     assert(fname);
 
     st->grav_len = 9.8; 
+    st->circle_radius = 20.;
+    st->gap_radius = 0.;
+    koh_cam_reset(&st->cam);
+
+    st->r = de_ecs_make();
 
     char svg_fname[128] = {}, lua_fname[128];
     sprintf(svg_fname, "%s.svg", fname);
@@ -790,9 +812,6 @@ static void load(Stage_shot *st, const char *fname) {
     //st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
     st->tex_example = res_tex_load(rl, svg_fname);
 
-    st->cam.zoom = 1.;
-    st->r = de_ecs_make();
-
     // Как de_ecs могла работать без зарегистрированных типов?
     bool prev_de_ecs_verbose = de_ecs_verbose;
     de_ecs_verbose = true;
@@ -868,9 +887,11 @@ static void load(Stage_shot *st, const char *fname) {
         .on_stop = tmr_spawn_circle_stop,
     });
 
+    /*
     Camera2D *cam = &st->cam;
     cam->target.x = st->nsvg_img->width / 2.;
     cam->target.y = st->nsvg_img->height / 2.;
+    */
 
     //st->sensor_name2func = htable_new(NULL);
 
@@ -880,16 +901,16 @@ static void load(Stage_shot *st, const char *fname) {
 }
 
 static void stage_shot_init(struct Stage_shot *st) {
-    //load(st, "assets/magic_level_04");
-    //load(st, "assets/magic_level_03");
-
+    st->cam_draw_rect = false;
     st->world_query_AABB = true;
     st->draw_sensors = false,
     st->verbose = false;
     st->borders_gap_px = 0;
     st->line_thick = 10.;
 
-    load(st, "assets/magic_level_05");
+    //load(st, "assets/magic_level_05");
+    //load(st, "assets/magic_level_04");
+    load(st, "assets/magic_level_03");
 }
 
 // TODO: Сделать поворот уровня(изменение вектора гравитации) с инерцией.
@@ -1026,10 +1047,10 @@ static void stage_shot_update(struct Stage_shot *st) {
 
     L_call(st->l, "update");
 
-    if (IsKeyDown(KEY_C)) {
+    if (IsKeyPressed(KEY_C)) {
         float y = -200.;
-        float radius = 4.;
-        circle_create(st->r, &st->wctx, (Rectangle) { 50., y, radius, 10., });
+        Rectangle rect = { 50., y, st->circle_radius, 10., };
+        circle_create(st->r, &st->wctx, rect);
         //circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
         //circle_create(st->r, &st->wctx, (Rectangle) { 450., y, radius, 10., });
         //circle_create(st->r, &st->wctx, (Rectangle) { 650., y, radius, 10., });
@@ -1167,12 +1188,7 @@ static void box2d_actions_gui(struct Stage_shot *st) {
     }
 
     if (igButton("reset camera", (ImVec2){})) {
-        st->cam.zoom = 1.;
-        st->cam.rotation = 0.;
-        //st->cam.target.x = 0.;
-        //st->cam.target.y = 0.;
-        st->cam.offset.x = 0.;
-        st->cam.offset.y = 0.;
+        koh_cam_reset(&st->cam);
     }
 
     igSameLine(0., 5.);
@@ -1271,6 +1287,10 @@ static void shot_gui(Stage_shot *st) {
     ImGuiWindowFlags flags = 0;
     igBegin("magic", &open, flags);
 
+    igCheckbox("draw camera rect", &st->cam_draw_rect);
+    igSliderFloat("gap_radius", &st->gap_radius, -700., 700., "%.3f", 0);
+    igSliderFloat("circle radius", &st->circle_radius, 1., 700., "%.3f", 0);
+
     ImGuiComboFlags combo_flags = 0;
     if (igBeginCombo("scenes", get_selected_svg(st), combo_flags)) {
         for (int i = 0; i < st->fsr_svg.num; ++i) {
@@ -1289,10 +1309,15 @@ static void shot_gui(Stage_shot *st) {
         //*/
         igEndCombo();
     }
-    igSameLine(0., 5.);
+    //igSameLine(0., 5.);
 
     ImVec2 zero = {};
-    if (igButton("switch", zero)) {
+
+    if (igButton("reset camera", zero)) {
+        koh_cam_reset(&st->cam);
+    }
+
+    if (igButton("reload scene", zero)) {
         const char *fname = "";
         unload(st);
         load(st, fname);
@@ -1480,17 +1505,18 @@ static void render_pass_box2d(Stage_shot *st) {
     if (!st->world_query_AABB)
         return;
 
-    //float gap_radius = 100;
-    float gap_radius = 0.;
     // Прямоугольник видимой части экрана с учетом масштаба
-    b2AABB screen = camera2aabb(&st->cam, gap_radius);
+    b2AABB screen = camera2aabb(&st->cam, st->gap_radius);
 
-    console_write("st->cam '%s'\n", camera2str(st->cam, false));
+    //console_write("st->cam '%s'\n", camera2str(st->cam, false));
+    trace("render_pass_box2d: st->cam '%s'\n", camera2str(st->cam, false));
 
     Rectangle rect = aabb2rect(screen);
+    //trace("render_pass_box2d: rect '%s'\n", rect2str(rect));
     //rect.x += st->cam.target.x;
     //rect.y += st->cam.target.y;
-    DrawRectangleRec(rect, BLUE);
+    if (st->cam_draw_rect)
+        DrawRectangleRec(rect, BLUE);
 
     b2QueryFilter filter = b2DefaultQueryFilter();
     b2World_OverlapAABB(
@@ -1577,6 +1603,8 @@ static void stage_shot_draw(Stage_shot *st) {
     render_pass_svg(st->nsvg_img, 1., st->line_thick);
     render_pass_box2d(st);
     render_pass_bound(st);
+
+    //DrawCircle(0., 0., 40., BLACK);
 
     L_call(st->l, "draw_post");
 
