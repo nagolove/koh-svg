@@ -48,6 +48,7 @@ typedef struct Sensor {
 
 static const uint64_t stage_shot_uniq_id = 4294967311;
 
+// components {{{
 // Тэг тела, что оно является игровым кружком
 const de_cp_type cp_type_circle = {
     // TODO: Добавит проверку при регистрации компонента на повторение cp_id
@@ -77,6 +78,7 @@ const de_cp_type cp_type_sensor = {
     .on_emplace = NULL,
     /*.callbacks_flags = DE_CB_ON_DESTROY | DE_CB_ON_EMPLACE,*/
 };
+// }}}
 
 typedef struct Stage_shot {
     Stage             parent;
@@ -135,7 +137,7 @@ typedef struct Stage_shot {
     xorshift32_state  xrng;
     b2Vec2            gravity;
     de_ecs            *r;
-    Texture2D         tex_example;
+    Texture2D         tex_circle;
     Resource          res_list;
     de_entity         borders[4];
     uint32_t          borders_num;
@@ -356,25 +358,41 @@ static void svg_shutdown_selected(FilesSearchResult *fsr) {
     }
 }
 
-static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
-    assert(r);
+typedef struct CircleDef {
+    de_ecs    *r;
+    WorldCtx  *wctx;
+    Rectangle rect;
+    Texture2D *tex;
+} CircleDef;
 
-    de_entity e = de_create(r);
+static de_entity circle_create(CircleDef cd) {
+    assert(cd.r);
+
+    de_entity e = de_create(cd.r);
 
     // Выдает память, но неправильную
-    b2BodyId *bid = de_emplace(r, e, cp_type_body);
+    b2BodyId *bid = de_emplace(cd.r, e, cp_type_body);
 
     bool prev_de_ecs_verbose = de_ecs_verbose;
     de_ecs_verbose = true;
-    char *tag_circle = de_emplace(r, e, cp_type_circle);
+    char *tag_circle = de_emplace(cd.r, e, cp_type_circle);
     de_ecs_verbose = prev_de_ecs_verbose;
 
     /*de_emplace(r, e, cp_type_circle);*/
     *tag_circle = 1;
-    ShapeRenderOpts *r_opts = de_emplace(r, e, cp_type_shape_render_opts);
+    ShapeRenderOpts *r_opts = de_emplace(cd.r, e, cp_type_shape_render_opts);
 
-    r_opts->color = GREEN;
-    r_opts->tex = NULL;
+    if (cd.tex) {
+        r_opts->color = WHITE;
+        r_opts->src = (Rectangle) {
+            .x = 0., .y = 0.,
+            .width = cd.tex->width,
+            .height = cd.tex->height,
+        };
+        r_opts->tex = cd.tex;
+    } else {
+        r_opts->color = GREEN;
+    }
     r_opts->thick = 5.;
 
     assert(bid);
@@ -383,9 +401,9 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     bd.userData = (void*)(uintptr_t)e;
     //bd.type = b2_staticBody;
     bd.type = b2_dynamicBody;
-    bd.position = (b2Vec2) { rect.x, rect.y };
+    bd.position = (b2Vec2) { cd.rect.x, cd.rect.y };
 
-    *bid = b2CreateBody(wctx->world, &bd);
+    *bid = b2CreateBody(cd.wctx->world, &bd);
     b2Body_EnableSleep(*bid, false);
 
     b2ShapeDef sd = b2DefaultShapeDef();
@@ -394,10 +412,10 @@ static de_entity circle_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     /*b2CreatePolygonShape(*bid, &sd, &poly);*/
     const b2Circle circle = {
         .center = {
-            rect.x, 
-            rect.y, 
+            cd.rect.x, 
+            cd.rect.y, 
         },
-        .radius = rect.width,
+        .radius = cd.rect.width,
     };
     b2ShapeId sid = b2CreateCircleShape(*bid, &sd, &circle);
     b2Shape_SetRestitution(sid, 0.15);
@@ -875,8 +893,15 @@ static void load(Stage_shot *st, const char *fname) {
     //exit(1);
 
     Resource *rl = &st->res_list;
-    //st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
+    st->tex_circle = res_tex_load(rl, "assets/magic_circle_01.png");
+    //st->tex_example = res_tex_load(rl, svg_fname);
+
+    /*
+    XXX: Есть ли в таком коде утечка памяти? 
+    Прошлая текстура не освобождается.
+    st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
     st->tex_example = res_tex_load(rl, svg_fname);
+    */
 
     // Как de_ecs могла работать без зарегистрированных типов?
     bool prev_de_ecs_verbose = de_ecs_verbose;
@@ -1114,10 +1139,18 @@ static void stage_shot_update(struct Stage_shot *st) {
 
     L_call(st->l, "update");
 
+    const CircleDef cd_default = {
+        .r = st->r,
+        .tex = &st->tex_circle,
+        .rect = { 0., 0., st->circle_radius, 10., },
+        .wctx = &st->wctx,
+    };
+
     if (IsKeyPressed(KEY_C)) {
         float y = -200.;
-        Rectangle rect = { 50., y, st->circle_radius, 10., };
-        circle_create(st->r, &st->wctx, rect);
+        CircleDef cd_tmp = cd_default;
+        cd_tmp.rect = (Rectangle){ 50., y, st->circle_radius, 10., };
+        circle_create(cd_tmp);
         //circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
         //circle_create(st->r, &st->wctx, (Rectangle) { 450., y, radius, 10., });
         //circle_create(st->r, &st->wctx, (Rectangle) { 650., y, radius, 10., });
@@ -1193,8 +1226,8 @@ static void box2d_actions_gui(struct Stage_shot *st) {
                 .color = WHITE,
                 //.tex = &st->tex_rt_template.texture,
                 //.src = rect_by_texture(st->tex_rt_template.texture),
-                .tex = &st->tex_example,
-                .src = rect_by_texture(st->tex_example),
+                .tex = &st->tex_circle,
+                .src = rect_by_texture(st->tex_circle),
             },
         }, num, NULL);    
     }
@@ -1210,8 +1243,8 @@ static void box2d_actions_gui(struct Stage_shot *st) {
                 .color = WHITE,
                 //.tex = &st->tex_rt_template.texture,
                 //.src = rect_by_texture(st->tex_rt_template.texture),
-                .tex = &st->tex_example,
-                .src = rect_by_texture(st->tex_example),
+                .tex = &st->tex_circle,
+                .src = rect_by_texture(st->tex_circle),
             },
         });    
     }
@@ -1226,8 +1259,8 @@ static void box2d_actions_gui(struct Stage_shot *st) {
                 .color = WHITE,
                 //.tex = &st->tex_rt_template.texture,
                 //.src = rect_by_texture(st->tex_rt_template.texture),
-                .tex = &st->tex_example,
-                .src = rect_by_texture(st->tex_example),
+                .tex = &st->tex_circle,
+                .src = rect_by_texture(st->tex_circle),
             },
             .radius = triangle_radius,
         }, num, NULL);
@@ -1385,6 +1418,7 @@ static void shot_gui(Stage_shot *st) {
 
     if (igButton("reload scene", zero)) {
         const char *selected_svg = get_selected_svg(st);
+        trace("shot_gui: selected_svg '%s'\n", selected_svg);
         if (selected_svg && strlen(selected_svg)) {
             char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
                 selected_svg,
