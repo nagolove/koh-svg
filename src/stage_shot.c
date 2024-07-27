@@ -5,6 +5,10 @@
 #define NANOSVG_IMPLEMENTATION
 
 // includes {{{
+#include "koh_cleanup.h"
+#include <emmintrin.h>  // Заголовочный файл для SSE2
+#include <immintrin.h>  // AVX
+#include <nmmintrin.h>  // popcnt
 #include "koh_lua_tools.h"
 #include "svg.h"
 #include "koh_input.h"
@@ -147,6 +151,21 @@ typedef struct Stage_shot {
     // }}}
 } Stage_shot;
 
+/*
+Заменить несколь Луа модулей в koh на один файл koh_lua.
+// {{{
+Префикс функций в них - L_
+L_stack_dump()
+L_table_dump()
+L_rect_get()
+Обязательная возможность работы с несколькими экземплярами виртуальной машины.
+Передавать явный указатель на состояние машины.
+
+Через L_set_registry_ptr()/L_get_registry_ptr() получать доступ к сценам и
+внутренним данным программы без явной передачи указателя на контекст. Данный 
+способ не является автоматическим, работает на лёгких данных пользователя.
+// }}}
+ */
 static void L_call(lua_State *l, const char *func_name);
 static void load(Stage_shot *st, const char *fname);
 static void unload(Stage_shot *st);
@@ -553,6 +572,7 @@ static void *L_get_registry_ptr(lua_State *l, const char *name) {
 }
 
 // Вызвать Луа функцию обратного вызова по имени сенсора
+/*
 static void L_sensor_call(lua_State *l, const char *sensor_name) {
     trace("L_sensor_call: sensor_name '%s'\n", sensor_name);
 
@@ -586,6 +606,7 @@ static void L_sensor_call(lua_State *l, const char *sensor_name) {
 
     //lua_pushstring(l, full_sensor_name);
 }
+*/
 
 static int l_gravity_set(lua_State *l) {
     assert(lua_islightuserdata(l, 1));
@@ -702,7 +723,66 @@ static void L_set_registry_ptr(lua_State *l, const char *name, void *ptr) {
 
 }
 
+static bool L_loadfile(lua_State *l, const char *lua_fname) {
+    assert(l);
+    assert(lua_fname);
+
+    //trace("L_loadfile: |'%s|\n", koh_backtrace_get());
+
+    int ret = luaL_loadfile(l, lua_fname);
+    if (ret != LUA_OK)
+        trace(
+                "L_loadfile: file '%s' return code %d with %s\n",
+                lua_fname, ret, lua_tostring(l, -1)
+             );
+    else {
+        ret = lua_pcall(l, 0, LUA_MULTRET, 0);
+        if (ret != LUA_OK) {
+            trace(
+                    "L_loadfile: pcall file '%s' return code %d with %s\n",
+                    lua_fname, ret, lua_tostring(l, -1)
+                 );
+        } else
+            trace("L_loadfile: script loaded\n");
+    }
+
+    return ret == LUA_OK;
+}
+
+/*
+static bool L_checksyntax(const char *fname) {
+    // {{{
+    lua_State *l_tmp = NULL;
+
+#ifdef KOH_RLWR
+    rlwr_t * rlwr = rlwr_new();
+    l_tmp = rlwr_state(rlwr);
+#else
+    l_tmp = luaL_newstate();
+    luaL_openlibs(l_tmp);
+#endif
+
+    bool ok = L_loadfile(l_tmp, fname);
+    
+#ifdef KOH_RLWR
+    rlwr_free(rlwr);
+#else
+    lua_close(l_tmp);
+#endif
+
+    return ok;
+    // }}}
+}
+*/
+
+// fname содержит имя файла уровня без расширения.
 static void load(Stage_shot *st, const char *fname) {
+    // Если файл скрипта отсутствует или содержит ошибки, то уровень 
+    // не выгружать
+    // XXX: Не работает
+    //if (!L_checksyntax(fname)) {
+        //return;
+    //}
 
     if (st->loaded) {
         unload(st);
@@ -724,6 +804,7 @@ static void load(Stage_shot *st, const char *fname) {
     sprintf(lua_fname, "%s.lua", fname);
 
     strncpy(st->lua_fname, lua_fname, sizeof(st->lua_fname));
+
     inotifier_watch(lua_fname, inotify_script_changed, st);
 
     trace("load: svg_fname '%s'\n", svg_fname);
@@ -756,22 +837,7 @@ static void load(Stage_shot *st, const char *fname) {
 
     trace("load: setup 'mgc' table [%s]\n", stack_dump(*l));
 
-    int ret = luaL_loadfile(*l, lua_fname);
-    if (ret != LUA_OK)
-        trace(
-            "load: load file '%s' return code %d with %s\n",
-            lua_fname, ret, lua_tostring(*l, -1)
-        );
-    else {
-         ret = lua_pcall(*l, 0, LUA_MULTRET, 0);
-         if (ret != LUA_OK) {
-            trace(
-                "load: pcall file '%s' return code %d with %s\n",
-                lua_fname, ret, lua_tostring(*l, -1)
-            );
-         } else
-             trace("load: script loaded\n");
-    }
+    L_loadfile(*l, lua_fname);
 
     trace("load: loadfile done [%s]\n", stack_dump(*l));
 
@@ -911,6 +977,7 @@ static void stage_shot_init(struct Stage_shot *st) {
     //load(st, "assets/magic_level_05");
     //load(st, "assets/magic_level_04");
     load(st, "assets/magic_level_03");
+    //load(st, "assets/magic_level_03");
 }
 
 // TODO: Сделать поворот уровня(изменение вектора гравитации) с инерцией.
@@ -1005,6 +1072,7 @@ static void L_call(lua_State *l, const char *func_name) {
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
+    /*
     de_ecs *r = st->r;
     b2SensorEvents sensor_events = b2World_GetSensorEvents(st->wctx.world);
     for (int i = 0; i < sensor_events.beginCount; i++) {
@@ -1013,12 +1081,10 @@ static void stage_shot_update(struct Stage_shot *st) {
         // XXX: Или лучше сделать через проверку сущности прикрепленной к телу
         // на тип добавленного к сущности компонента?
         // Преимущества - унификация
-        /*
-        size_t sz = sizeof(event.sensorShapeId);
-        if (set_exist(st->sensors_killer, &event.sensorShapeId, sz)) {
-            trace("stage_shot_update: sensors killer found\n");
-        }
-        */
+        //size_t sz = sizeof(event.sensorShapeId);
+        //if (set_exist(st->sensors_killer, &event.sensorShapeId, sz)) {
+            //trace("stage_shot_update: sensors killer found\n");
+        //}
 
         de_entity e = (intptr_t)b2Shape_GetUserData(event.sensorShapeId);
 
@@ -1027,6 +1093,7 @@ static void stage_shot_update(struct Stage_shot *st) {
             L_sensor_call(st->l, sensor->name);
         }
     }
+        */
 
     timerman_update(st->tm);
     koh_camera_process_mouse_drag(&(struct CameraProcessDrag) {
@@ -1054,6 +1121,14 @@ static void stage_shot_update(struct Stage_shot *st) {
         //circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
         //circle_create(st->r, &st->wctx, (Rectangle) { 450., y, radius, 10., });
         //circle_create(st->r, &st->wctx, (Rectangle) { 650., y, radius, 10., });
+    }
+
+    const float dzoom = 0.001;
+    if (IsKeyDown(KEY_Z)) {
+        st->cam.zoom -= dzoom;
+    }
+    if (IsKeyDown(KEY_X)) {
+        st->cam.zoom += dzoom;
     }
 
     // left
@@ -1283,13 +1358,11 @@ static void set_circles_restinition(
 
 static void shot_gui(Stage_shot *st) {
     // {{{
+    ImVec2 zero = {};
+
     bool open = true;
     ImGuiWindowFlags flags = 0;
     igBegin("magic", &open, flags);
-
-    igCheckbox("draw camera rect", &st->cam_draw_rect);
-    igSliderFloat("gap_radius", &st->gap_radius, -700., 700., "%.3f", 0);
-    igSliderFloat("circle radius", &st->circle_radius, 1., 700., "%.3f", 0);
 
     ImGuiComboFlags combo_flags = 0;
     if (igBeginCombo("scenes", get_selected_svg(st), combo_flags)) {
@@ -1309,20 +1382,37 @@ static void shot_gui(Stage_shot *st) {
         //*/
         igEndCombo();
     }
-    //igSameLine(0., 5.);
 
-    ImVec2 zero = {};
+    if (igButton("reload scene", zero)) {
+        const char *selected_svg = get_selected_svg(st);
+        if (selected_svg && strlen(selected_svg)) {
+            char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
+                selected_svg,
+                "\\.svg",
+                ""
+            );
+
+            trace(
+                "shot_gui: selected_svg '%s', fname_noext '%s'\n",
+                selected_svg, fname_noext
+             );
+
+            load(st, fname_noext);
+
+        }
+        /*koh_search_files_shutdown(&st->fsr_svg);*/
+        /*koh_search_files(&st->fss_svg);*/
+    }
+
+    igCheckbox("draw camera rect", &st->cam_draw_rect);
+    igSliderFloat("gap_radius", &st->gap_radius, -700., 700., "%.3f", 0);
+    igSliderFloat(
+        "circle radius", &st->circle_radius, 1., 70., "%.3f", 
+        ImGuiSliderFlags_Logarithmic
+    );
 
     if (igButton("reset camera", zero)) {
         koh_cam_reset(&st->cam);
-    }
-
-    if (igButton("reload scene", zero)) {
-        const char *fname = "";
-        unload(st);
-        load(st, fname);
-        /*koh_search_files_shutdown(&st->fsr_svg);*/
-        /*koh_search_files(&st->fss_svg);*/
     }
 
     bool changed = igSliderFloat(
@@ -1354,12 +1444,256 @@ static void shot_gui(Stage_shot *st) {
     // }}}
 }
 
+/*
+// Imgui style selector {{{
+const char *values_map[] = {
+
+    [ImGuiCol_Text] = "ImGuiCol_Text",
+    [ImGuiCol_TextDisabled] = "ImGuiCol_TextDisabled",
+    [ImGuiCol_WindowBg] = "ImGuiCol_WindowBg",
+    [ImGuiCol_ChildBg] = "ImGuiCol_ChildBg",
+    [ImGuiCol_PopupBg] = "ImGuiCol_PopupBg",
+    [ImGuiCol_Border] = "ImGuiCol_Border",
+    [ImGuiCol_BorderShadow] = "ImGuiCol_BorderShadow",
+    [ImGuiCol_FrameBg] = "ImGuiCol_FrameBg",
+    [ImGuiCol_FrameBgHovered] = "ImGuiCol_FrameBgHovered",
+    [ImGuiCol_FrameBgActive] = "ImGuiCol_FrameBgActive",
+    [ImGuiCol_TitleBg] = "ImGuiCol_TitleBg",
+    [ImGuiCol_TitleBgActive] = "ImGuiCol_TitleBgActive",
+    [ImGuiCol_TitleBgCollapsed] = "ImGuiCol_TitleBgCollapsed",
+    [ImGuiCol_MenuBarBg] = "ImGuiCol_MenuBarBg",
+    [ImGuiCol_ScrollbarBg] = "ImGuiCol_ScrollbarBg",
+    [ImGuiCol_ScrollbarGrab] = "ImGuiCol_ScrollbarGrab",
+    [ImGuiCol_ScrollbarGrabHovered] = "ImGuiCol_ScrollbarGrabHovered",
+    [ImGuiCol_ScrollbarGrabActive] = "ImGuiCol_ScrollbarGrabActive",
+    [ImGuiCol_CheckMark] = "ImGuiCol_CheckMark",
+    [ImGuiCol_SliderGrab] = "ImGuiCol_SliderGrab",
+    [ImGuiCol_SliderGrabActive] = "ImGuiCol_SliderGrabActive",
+    [ImGuiCol_Button] = "ImGuiCol_Button",
+    [ImGuiCol_ButtonHovered] = "ImGuiCol_ButtonHovered",
+    [ImGuiCol_ButtonActive] = "ImGuiCol_ButtonActive",
+    [ImGuiCol_Header] = "ImGuiCol_Header",
+    [ImGuiCol_HeaderHovered] = "ImGuiCol_HeaderHovered",
+    [ImGuiCol_HeaderActive] = "ImGuiCol_HeaderActive",
+    [ImGuiCol_Separator] = "ImGuiCol_Separator",
+    [ImGuiCol_SeparatorHovered] = "ImGuiCol_SeparatorHovered",
+    [ImGuiCol_SeparatorActive] = "ImGuiCol_SeparatorActive",
+    [ImGuiCol_ResizeGrip] = "ImGuiCol_ResizeGrip",
+    [ImGuiCol_ResizeGripHovered] = "ImGuiCol_ResizeGripHovered",
+    [ImGuiCol_ResizeGripActive] = "ImGuiCol_ResizeGripActive",
+    [ImGuiCol_Tab] = "ImGuiCol_Tab",
+    [ImGuiCol_TabHovered] = "ImGuiCol_TabHovered",
+    [ImGuiCol_TabActive] = "ImGuiCol_TabActive",
+    [ImGuiCol_TabUnfocused] = "ImGuiCol_TabUnfocused",
+    [ImGuiCol_TabUnfocusedActive] = "ImGuiCol_TabUnfocusedActive",
+    [ImGuiCol_PlotLines] = "ImGuiCol_PlotLines",
+    [ImGuiCol_PlotLinesHovered] = "ImGuiCol_PlotLinesHovered",
+    [ImGuiCol_PlotHistogram] = "ImGuiCol_PlotHistogram",
+    [ImGuiCol_PlotHistogramHovered] = "ImGuiCol_PlotHistogramHovered",
+    [ImGuiCol_TableHeaderBg] = "ImGuiCol_TableHeaderBg",
+    [ImGuiCol_TableBorderStrong] = "ImGuiCol_TableBorderStrong",
+    [ImGuiCol_TableBorderLight] = "ImGuiCol_TableBorderLight",
+    [ImGuiCol_TableRowBg] = "ImGuiCol_TableRowBg",
+    [ImGuiCol_TableRowBgAlt] = "ImGuiCol_TableRowBgAlt",
+    [ImGuiCol_TextSelectedBg] = "ImGuiCol_TextSelectedBg",
+    [ImGuiCol_DragDropTarget] = "ImGuiCol_DragDropTarget",
+    [ImGuiCol_NavHighlight] = "ImGuiCol_NavHighlight",
+    [ImGuiCol_NavWindowingHighlight] = "ImGuiCol_NavWindowingHighlight",
+    [ImGuiCol_NavWindowingDimBg] = "ImGuiCol_NavWindowingDimBg",
+    [ImGuiCol_ModalWindowDimBg] = "ImGuiCol_ModalWindowDimBg",
+
+};
+
+int values_num = sizeof(values_map) / sizeof(values_map[0]);
+
+const char *getter(void *data, int n) {
+    return values_map[n];
+}
+int static style = 0;
+// }}}
+*/
+
+const char *uint64_to_str_bin(uint64_t value) {
+    static char buf[128] = {};
+    memset(buf, 0, sizeof(buf));
+    
+    //for (uint32_t i = 63; i >= 0; i--) {
+
+    //for (int i = 63; i >= 0; i--) {
+        //buf[63 - i] = (value & (1ULL << (uint64_t)i)) ? '1' : '0';
+    //}
+
+    for (int i = 0; i < 64; i++) {
+        buf[i] = (value & (1ULL << (uint64_t)i)) ? '1' : '0';
+    }
+
+    buf[64] = '\0';  // Null-terminate the string
+    return buf;
+}
+
+__attribute_maybe_unused__
+static void bit_calculator_gui() {
+    // {{{
+    bool opened = true;
+    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize;
+    igBegin("x86_64 bit calculator", &opened, flags);
+
+    static bool bits[64] = {};
+    size_t bits_num = sizeof(bits) / sizeof(bits[0]);
+
+    static int spacing = 19;
+    //igSliderInt("spacing", &spacing, 0, 100, "%d", 0);
+
+    for (int i = bits_num; i; i--) {
+        igText("%.2d", i - 1);
+        if (i - 1 != 0)
+            igSameLine(0., spacing);
+    }
+
+    ImVec4  col_checkmark = {0.5, 0., 0., 1.},
+            col_framebg = {0.5, 0.5, 0.5, 1.},
+            col_hovered = { 0., 0.7, 0., 1.};
+
+    //igListBox_FnStrPtr("style", &style, getter, NULL, values_num , 10);
+    //trace("bit_calculator_gui: style %d\n", style);
+
+    for (int i = 0; i < bits_num; i++) {
+        char checkbox_id[32] = {};
+        sprintf(checkbox_id, "##%d", i);
+
+        //igPushStyleColor_Vec4(ImGuiCol_CheckMark, checkbox_color);
+        igPushStyleColor_Vec4(ImGuiCol_FrameBg, col_framebg);
+        igPushStyleColor_Vec4(ImGuiCol_FrameBgHovered, col_hovered);
+        igPushStyleColor_Vec4(ImGuiCol_CheckMark, col_checkmark);
+
+        igCheckbox(checkbox_id, &bits[i]);
+
+        //igSameLine(0., 0.);
+        //igText("|");
+
+        igPopStyleColor(3);
+
+        if (i + 1 != bits_num)
+            igSameLine(0., 10.);
+    }
+
+    uint64_t result = 0;
+    for (int i = 0; i < bits_num; i++) {
+        result = (result << 1) | bits[i];
+    }
+
+    //trace("bit_calculator_gui:\n");
+
+    const int buf_len = 128;
+    char buf_bin[buf_len],
+         buf_oct[buf_len],
+         buf_dec[buf_len],
+         buf_hex[buf_len];
+
+    memset(buf_bin, 0, sizeof(buf_bin));
+    memset(buf_oct, 0, sizeof(buf_oct));
+    memset(buf_dec, 0, sizeof(buf_dec));
+    memset(buf_hex, 0, sizeof(buf_hex));
+
+    sprintf(buf_bin, "%s", uint64_to_str_bin(result));
+    sprintf(buf_oct, "%llo", (unsigned long long)result);
+    sprintf(buf_dec, "%llu", (unsigned long long)result);
+    sprintf(buf_hex, "%llx", (unsigned long long)result);
+
+    //size_t buf_len = sizeof(buf) / sizeof(buf[0]);
+    ImGuiInputFlags input_flags = 0;
+
+    igText("bin:");
+    igSameLine(0., 10.);
+    igInputText("##input", buf_bin, buf_len, input_flags, NULL, NULL);
+
+    igText("oct:");
+    igSameLine(0., 10.);
+    igInputText("##input", buf_oct, buf_len, input_flags, NULL, NULL);
+
+    igText("dec:");
+    igSameLine(0., 10.);
+    igInputText("##input", buf_dec, buf_len, input_flags, NULL, NULL);
+
+    igText("hex:");
+    igSameLine(0., 10.);
+    igInputText("##input", buf_hex, buf_len, input_flags, NULL, NULL);
+
+    //sscanf(buf, "%lu", &result);
+    for (uint64_t i = 0; i < bits_num; i++) {
+        //bool bit = !!(result & (1 << i));
+        //bits[i] = bit;
+    }
+    // */
+
+    igEnd();
+    // }}}
+}
+
+__attribute_maybe_unused__
+static void simd_bit_calculator_gui() {
+    // {{{
+    bool opened = true;
+    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize;
+    igBegin("SIMD bit calculator", &opened, flags);
+
+    //__m256i a = {}, b = {}, c = {};
+    //c = a + b;
+
+    static bool bits[256] = {};
+    size_t bits_num = sizeof(bits) / sizeof(bits[0]);
+
+    static int spacing = 19;
+    //igSliderInt("spacing", &spacing, 0, 100, "%d", 0);
+
+    for (int i = bits_num; i; i--) {
+        igText("%.2d", i - 1);
+        if (i - 1 != 0 && i % 64)
+            igSameLine(0., spacing);
+    }
+
+    for (int i = 0; i < bits_num; i++) {
+        char checkbox_id[32] = {};
+        sprintf(checkbox_id, "##%d", i);
+        igCheckbox(checkbox_id, &bits[i]);
+        if (i + 1 != bits_num)
+            igSameLine(0., 10.);
+    }
+
+    uint64_t result = 0;
+    for (int i = 0; i < bits_num; i++) {
+        result = (result << 1) | bits[i];
+    }
+
+    trace("bit_calculator_gui:\n");
+
+    char buf[128] = {};
+    sprintf(buf, "%lu", result);
+    size_t buf_len = sizeof(buf) / sizeof(buf[0]);
+    ImGuiInputFlags input_flags = 0;
+    igText("number");
+    igSameLine(0., 10.);
+    igInputText("##input", buf, buf_len, input_flags, NULL, NULL);
+
+    sscanf(buf, "%lu", &result);
+    for (uint64_t i = 0; i < bits_num; i++) {
+        //bool bit = !!(result & (1 << i));
+        //bits[i] = bit;
+    }
+
+    igEnd();
+    // }}}
+}
+
 static void stage_shot_gui(struct Stage_shot *st) {
     assert(st);
 
     input_gp_update(st->gp_drawer);
     input_kb_update(st->kb_drawer);
     input_kb_gui_update(st->kb_drawer);
+
+    //simd_bit_calculator_gui();
+    bit_calculator_gui();
 
     box2d_gui(&st->wctx);
     box2d_actions_gui(st);
@@ -1509,7 +1843,7 @@ static void render_pass_box2d(Stage_shot *st) {
     b2AABB screen = camera2aabb(&st->cam, st->gap_radius);
 
     //console_write("st->cam '%s'\n", camera2str(st->cam, false));
-    trace("render_pass_box2d: st->cam '%s'\n", camera2str(st->cam, false));
+    //trace("render_pass_box2d: st->cam '%s'\n", camera2str(st->cam, false));
 
     Rectangle rect = aabb2rect(screen);
     //trace("render_pass_box2d: rect '%s'\n", rect2str(rect));
