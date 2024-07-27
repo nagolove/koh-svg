@@ -163,6 +163,7 @@ TODO: Сделать что-то вроде
     koh_system_add(cb_init, cb_shutdown);
     koh_system_print_order();
      */
+    SetTraceLogCallback(koh_log_custom);
 
     koh_hashers_init();
     logger_init();
