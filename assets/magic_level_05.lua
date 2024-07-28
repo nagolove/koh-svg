@@ -75,11 +75,8 @@ function unload()
     print("unload")
 end
 
-function update()
-    --print("update: dt", GetFrameTime())
-end
-
 local fnt_size = 200
+local fnt_size_actual = fnt_size
 --local fnt = LoadFont("assets/fonts/jetbrainsmono.ttf", fnt_size)
 local fnt = LoadFont("assets/fonts/jetbrainsmono.ttf")
 local pos = Vector2(200, 200)
@@ -99,7 +96,7 @@ function draw_pre()
         pos, 
         Vector2(msg_width.x / 2., fnt.baseSize / 2.),
         rotation, -- rotation
-        fnt_size,  -- fontSize
+        fnt_size_actual,  -- fontSize
         0,    -- spacing
         --LIGHTGRAY
         RED
@@ -125,3 +122,12 @@ end
 function draw_post()
 
 end
+
+function update()
+    fnt_size_actual = math.sin(fnt_size_actual + 1) * 10
+    if (fnt_size_actual <= 0) then
+        fnt_size_actual = 0
+    print("fnt_size_actual", fnt_size_actual)
+    --print("update: dt", GetFrameTime())
+end
+
