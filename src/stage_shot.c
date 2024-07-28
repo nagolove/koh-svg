@@ -5,7 +5,8 @@
 #define NANOSVG_IMPLEMENTATION
 
 // includes {{{
-#include "koh_imgui.h"
+//#include "koh_imgui.h"
+#include "koh_components.h"
 #include "koh_cleanup.h"
 #include "koh_routine.h"
 #include <emmintrin.h>  // Заголовочный файл для SSE2
@@ -31,10 +32,10 @@
 #include <stdlib.h>
 #include "koh_timerman.h"
 #include "koh_reasings.h"
-#include "koh_table.h"
 #include "koh_routine.h"
 #include "koh_inotifier.h"
 #include "koh_cammode.h"
+#include "koh_visual_tools.h"
 
 #ifndef KOH_NO_RLWR
 #include "rlwr.h"
@@ -85,6 +86,8 @@ typedef struct Stage_shot {
     Stage             parent;
     uint64_t          uniq_id;
     // {{{
+    
+    struct CheckUnderMouseOpts under_mouse_opts;
 
     /* 
     Уровень загружен - 
@@ -97,6 +100,9 @@ typedef struct Stage_shot {
 
     InputKbMouseDrawer *kb_drawer;
     InputGamepadDrawer *gp_drawer;
+
+    // Штука для рисования сенсоров
+    struct VisualTool           tool_visual;
 
     // "sensor_name" -> int (lua reference for function() end)
     //HTable            *sensor_name2func;
@@ -375,6 +381,7 @@ typedef struct CircleDef {
     WorldCtx  *wctx;
     Rectangle rect;
     Texture2D *tex;
+    Color     color;
 } CircleDef;
 
 static de_entity circle_create(CircleDef cd) {
@@ -408,7 +415,7 @@ static de_entity circle_create(CircleDef cd) {
         );
         r_opts->tex = cd.tex;
     } else {
-        r_opts->color = GREEN;
+        r_opts->color = cd.color;
     }
     r_opts->thick = 5.;
 
@@ -582,6 +589,9 @@ static int search_file_printer(void *udata, const char *fmt, ...) {
 
     va_list args;
     va_start(args, fmt);
+    int ret = vsnprintf(buf, sizeof(buf) - 1, fmt, args);
+    va_end(args);
+
     strcat(udata, buf);
 
     return ret;
@@ -606,8 +616,8 @@ static void *L_get_registry_ptr(lua_State *l, const char *name) {
     return ptr;
 }
 
-// Вызвать Луа функцию обратного вызова по имени сенсора
-/*
+// Вызвать Луа функцию обратного вызова по имени сенсора и передать ей
+// агрументом функции сущность в виде легких данных пользователя
 static void L_sensor_call(lua_State *l, const char *sensor_name) {
     trace("L_sensor_call: sensor_name '%s'\n", sensor_name);
 
@@ -616,6 +626,7 @@ static void L_sensor_call(lua_State *l, const char *sensor_name) {
 
     trace("L_sensor_call: 0 [%s]\n", stack_dump(l));
 
+    // Создать полное имя сенсора и по нему получить функцию обратного вызова
     char full_sensor_name[128] = {};
     sprintf(full_sensor_name, "sensor_%s", sensor_name);
     lua_pushstring(l, full_sensor_name);
@@ -641,7 +652,7 @@ static void L_sensor_call(lua_State *l, const char *sensor_name) {
 
     //lua_pushstring(l, full_sensor_name);
 }
-*/
+// */
 
 static int l_gravity_set(lua_State *l) {
     assert(lua_islightuserdata(l, 1));
@@ -813,10 +824,15 @@ static bool L_checksyntax(const char *fname) {
 
 // fname содержит имя файла уровня без расширения.
 static void load(Stage_shot *st, const char *fname) {
+    char svg_fname[128] = {}, lua_fname[128];
+    sprintf(svg_fname, "%s.svg", fname);
+    sprintf(lua_fname, "%s.lua", fname);
+
     // Если файл скрипта отсутствует или содержит ошибки, то уровень 
     // не выгружать
     // XXX: Не работает
-    if (!L_checksyntax(fname)) {
+    if (!L_checksyntax(lua_fname)) {
+        trace("load: syntax check failed\n");
         return;
     }
 
@@ -828,16 +844,14 @@ static void load(Stage_shot *st, const char *fname) {
     assert(st);
     assert(fname);
 
+    // TODO: Устанавливать значения из скрипта
     st->grav_len = 9.8; 
-    st->circle_radius = 20.;
+    st->circle_radius = 5.;
+
     st->gap_radius = 0.;
     koh_cam_reset(&st->cam);
 
     st->r = de_ecs_make();
-
-    char svg_fname[128] = {}, lua_fname[128];
-    sprintf(svg_fname, "%s.svg", fname);
-    sprintf(lua_fname, "%s.lua", fname);
 
     trace(
         "load: svg_fname '%s', lua_fname '%s'\n",
@@ -1015,12 +1029,24 @@ static void load(Stage_shot *st, const char *fname) {
 
     //st->sensor_name2func = htable_new(NULL);
 
+    // TODO: Передавать клавишу мыши
+    st->under_mouse_opts = (struct CheckUnderMouseOpts) {
+        .cam = st->cam,
+        .wctx = &st->wctx,
+        .tm = st->tm,
+        .duration = 4.,
+        .r = st->r,
+    };
+
     L_call(st->l, "load");
 
     st->loaded = true;
 }
 
 static void stage_shot_init(struct Stage_shot *st) {
+    visual_tool_init(&st->tool_visual);
+    st->tool_visual.mode = VIS_TOOL_RECTANGLE;
+
     st->cam_draw_rect = false;
     st->world_query_AABB = true;
     st->draw_sensors = false,
@@ -1034,9 +1060,10 @@ static void stage_shot_init(struct Stage_shot *st) {
         .a = 255,
     };
 
-    //load(st, "assets/magic_level_05");
+    // FIXME: Загружать уровень если файл скрипта отсутствует
+    load(st, "assets/magic_level_05");
     //load(st, "assets/magic_level_04");
-    load(st, "assets/magic_level_03");
+    //load(st, "assets/magic_level_03");
     //load(st, "assets/magic_level_03");
 }
 
@@ -1123,7 +1150,7 @@ static void L_call(lua_State *l, const char *func_name) {
     if (lua_pcall(l, 0, 0, 0) != LUA_OK)  {
         if (mgc_verbose) {
             trace(
-                "stage_shot_update: call '%s' was failed with '%s'\n", 
+                "L_call: calling '%s' was failed with '%s'\n", 
                 func_name, lua_tostring(l, -1)
             );
             exit(EXIT_FAILURE);
@@ -1133,8 +1160,7 @@ static void L_call(lua_State *l, const char *func_name) {
     //trace("L_call: 3 [%s]\n", stack_dump(l));
 }
 
-static void stage_shot_update(struct Stage_shot *st) {
-    /*
+static void sensors_update(Stage_shot *st) {
     de_ecs *r = st->r;
     b2SensorEvents sensor_events = b2World_GetSensorEvents(st->wctx.world);
     for (int i = 0; i < sensor_events.beginCount; i++) {
@@ -1143,23 +1169,25 @@ static void stage_shot_update(struct Stage_shot *st) {
         // XXX: Или лучше сделать через проверку сущности прикрепленной к телу
         // на тип добавленного к сущности компонента?
         // Преимущества - унификация
-        //size_t sz = sizeof(event.sensorShapeId);
-        //if (set_exist(st->sensors_killer, &event.sensorShapeId, sz)) {
-            //trace("stage_shot_update: sensors killer found\n");
-        //}
 
         de_entity e = (intptr_t)b2Shape_GetUserData(event.sensorShapeId);
 
-        Sensor *sensor = de_try_get(r, e, cp_type_sensor);
-        if (sensor) {
-            L_sensor_call(st->l, sensor->name);
+        if (e != de_null && de_valid(st->r, e)) {
+            Sensor *sensor = de_try_get(r, e, cp_type_sensor);
+            if (sensor) {
+                L_sensor_call(st->l, sensor->name);
+            }
         }
     }
-        */
+}
 
+static void stage_shot_update(struct Stage_shot *st) {
+    beh_check_under_mouse(&st->under_mouse_opts);
+    visual_tool_update(&st->tool_visual, &st->cam);
+    sensors_update(st);
     timerman_update(st->tm);
     koh_camera_process_mouse_drag(&(struct CameraProcessDrag) {
-            .mouse_btn = MOUSE_BUTTON_RIGHT,
+            .mouse_btn = MOUSE_BUTTON_LEFT,
             .cam = &st->cam
     });
 
@@ -1178,7 +1206,8 @@ static void stage_shot_update(struct Stage_shot *st) {
 
     const CircleDef cd_default = {
         .r = st->r,
-        .tex = &st->tex_circle,
+        //.tex = &st->tex_circle,
+        .color = BLACK,
         .rect = { 0., 0., st->circle_radius, 10., },
         .wctx = &st->wctx,
     };
@@ -1495,14 +1524,16 @@ static void shot_gui(Stage_shot *st) {
         ImGuiSliderFlags_Logarithmic
     );
 
-    static bool header_open = false;
-    ImGuiTreeNodeFlags heading_flags = ImGuiTreeNodeFlags_Bullet;
+    //static bool header_open = false;
+    //static ImGuiTreeNodeFlags heading_flags = ImGuiTreeNodeFlags_Bullet;
+    static ImGuiTreeNodeFlags heading_flags = 0;
 
     /*
     igListBox_FnStrPtr(
-        "heading_flags", &heading_flags, getter, NULL, values_num , 10
+        "heading_flags", &heading_flags,
+        koh_getter_TreeNodeFlags, NULL, num_TreeNodeFlags, 10
     );
-    */
+    // */
 
     //if (igCollapsingHeader_BoolPtr("colors", &header_open, heading_flags)) {
     if (igCollapsingHeader_TreeNodeFlags("colors", heading_flags)) {
@@ -2045,6 +2076,7 @@ static void stage_shot_draw(Stage_shot *st) {
 
     L_call(st->l, "draw_post");
 
+    visual_tool_draw(&st->tool_visual, &st->cam);
     render_pass_debug(st);
 
     EndMode2D();
@@ -2053,6 +2085,7 @@ static void stage_shot_draw(Stage_shot *st) {
 static void stage_shot_shutdown(struct Stage_shot *st) {
     trace("stage_shot_shutdown:\n");
 
+    visual_tool_shutdown(&st->tool_visual);
     input_gp_free(st->gp_drawer);
     input_kb_free(st->kb_drawer);
     koh_search_files_shutdown(&st->fsr_svg);
