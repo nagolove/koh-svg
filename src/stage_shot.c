@@ -335,6 +335,9 @@ static void body_creator(float x, float y, void *udata) {
     WorldCtx *wctx = &ctx->st->wctx;
     Stage_shot *st = ctx->st;
     //trace("body_creator:\n");
+
+    // TODO: Добавлять окружности в местах перегиба для более красивой рисовки
+    // и что-бы мелкие шарики не застревали в щелях между прямыми кусками.
     if (ctx->last_used) {
         segment_create(st->r, wctx, ctx->last, (b2Vec2) { x, y });
     } else {
