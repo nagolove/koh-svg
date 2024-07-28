@@ -18,11 +18,11 @@ local inspect = require "inspect"
 
 -- TODO: Поддержка работы с сущностями.
 local function on_sensor_1()
-    print("on_sensor_start_1:")
+    print("on_sensor_1:")
 end
 
 local function on_sensor_2()
-    print("on_sensor_start_2:")
+    print("on_sensor_2:")
 end
 
 local function on_sensor_3()
@@ -83,37 +83,30 @@ local pos = Vector2(200, 200)
 local rotation = 0
 local msg = "Congrats! You created your first window!";
 --RLAPI Vector2 MeasureTextEx(Font font, const char *text, float fontSize, float spacing);    // Measure string size for Font
-local msg_width = MeasureTextEx(fnt, msg, fnt_size, 0.)
 
 function draw_pre()
     -- {{{
+        
     --RLAPI void DrawTextEx(Font font, const char *text, Vector2 position, float fontSize, float spacing, Color tint); // Draw text using font and additional parameters
     --pos.x
 --RLAPI void DrawTextPro(Font font, const char *text, Vector2 position, Vector2 origin, float rotation, float fontSize, float spacing, Color tint); // Draw text using Font and pro parameters (rotation)
+
+    local msg_width = MeasureTextEx(fnt, msg, fnt_size_actual, 0.)
+    local shadow_delta = Vector2(2., 1.);
+
     DrawTextPro(
-        fnt, 
-        msg,
-        pos, 
-        Vector2(msg_width.x / 2., fnt.baseSize / 2.),
+        fnt, msg, pos, Vector2(msg_width.x / 2., fnt.baseSize / 2.),
         rotation, -- rotation
         fnt_size_actual,  -- fontSize
+        0,   BLACK
+    )
+    DrawTextPro(
+        fnt, msg, Vector2Add(pos, shadow_delta), 
+        Vector2(msg_width.x / 2., fnt.baseSize / 2.), rotation, -- rotation
+        fnt_size_actual,  -- fontSize
         0,    -- spacing
-        --LIGHTGRAY
         RED
     )
-
-    --[[
-    --[[
-    DrawTextEx(
-        --GetFontDefault(),
-        fnt,
-        "Congrats! You created your first window!",
-        pos,
-        80.,  -- font size
-        0.,   -- spacing
-        LIGHTGRAY
-    )
-    --]]
 
     rotation = (rotation + 1) % 360
     -- }}}
@@ -123,11 +116,15 @@ function draw_post()
 
 end
 
+local fnt_delta = -0.5
+
 function update()
-    fnt_size_actual = math.sin(fnt_size_actual + 1) * 10
-    if (fnt_size_actual <= 0) then
-        fnt_size_actual = 0
-    print("fnt_size_actual", fnt_size_actual)
+    fnt_size_actual = fnt_size_actual + fnt_delta
+    if (fnt_size_actual <= 0 or fnt_size_actual >= fnt_size) then
+        fnt_delta = - fnt_delta
+    end
+
+    --print("fnt_size_actual", fnt_size_actual)
     --print("update: dt", GetFrameTime())
 end
 
