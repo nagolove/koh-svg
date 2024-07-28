@@ -5,7 +5,9 @@
 #define NANOSVG_IMPLEMENTATION
 
 // includes {{{
+#include "koh_imgui.h"
 #include "koh_cleanup.h"
+#include "koh_routine.h"
 #include <emmintrin.h>  // Заголовочный файл для SSE2
 #include <immintrin.h>  // AVX
 #include <nmmintrin.h>  // popcnt
@@ -40,12 +42,11 @@
 
 // }}}
 
-#define cleanup(func) __attribute__((cleanup(func)))
-
 typedef struct Sensor {
     char name[128];
 } Sensor;
 
+static bool mgc_verbose = false;
 static const uint64_t stage_shot_uniq_id = 4294967311;
 
 // components {{{
@@ -121,7 +122,9 @@ typedef struct Stage_shot {
                       // проверочный вывод в консоль
                       verbose,       
                       // рисовать область камеры
-                      cam_draw_rect; 
+                      cam_draw_rect,
+                      // границы поля svg файла
+                      draw_bound;
     int               borders_gap_px;
 
 #ifdef KOH_RLWR
@@ -130,6 +133,7 @@ typedef struct Stage_shot {
     lua_State         *l;
     char              lua_fname[256];
 
+    Color             color_background;
     Camera2D          cam;
     NSVGimage         *nsvg_img;
     Rectangle         svg_bound;
@@ -212,13 +216,21 @@ static void input_shutdown(Stage_shot *st) {
 //}
 
 void inotify_script_changed(const char *fname, void *udata) {
-    trace("inotify_script_changed: fname '%s'\n", fname);
     inotifier_watch(fname, inotify_script_changed, udata);
+
+    char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
+        fname, "\\.lua", ""
+    );
+
+    trace(
+        "inotify_script_changed: fname '%s', fname_noext '%s'\n",
+        fname, fname_noext
+    );
 
     // XXX: Сперва проверить корректность загрузки скрипта, 
     // только потом выгружать сцену
     Stage_shot *st = udata;
-    load(st, fname);
+    load(st, fname_noext);
 }
 
 static bool query_world_draw(b2ShapeId shape_id, void* context) {
@@ -292,7 +304,7 @@ static de_entity segment_create(
         r, e, cp_type_shape_render_opts
     );
 
-    r_opts->color = MAROON;
+    r_opts->color = BLACK;
     r_opts->tex = NULL;
     r_opts->thick = 5.;
 
@@ -366,6 +378,7 @@ typedef struct CircleDef {
 } CircleDef;
 
 static de_entity circle_create(CircleDef cd) {
+    // {{{
     assert(cd.r);
 
     de_entity e = de_create(cd.r);
@@ -389,6 +402,10 @@ static de_entity circle_create(CircleDef cd) {
             .width = cd.tex->width,
             .height = cd.tex->height,
         };
+        trace(
+            "circle_create: ct->tex size %dx%d\n",
+            cd.tex->width, cd.tex->height
+        );
         r_opts->tex = cd.tex;
     } else {
         r_opts->color = GREEN;
@@ -422,9 +439,11 @@ static de_entity circle_create(CircleDef cd) {
 
     /*trace("circle_create: created\n");*/
     return e;
+    // }}}
 }
 
 /*
+// {{{
 static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
     assert(r);
 
@@ -455,6 +474,7 @@ static de_entity box_create(de_ecs *r, WorldCtx *wctx, Rectangle rect) {
 
     return e;
 }
+// }}}
 */
 
 /*
@@ -562,9 +582,6 @@ static int search_file_printer(void *udata, const char *fmt, ...) {
 
     va_list args;
     va_start(args, fmt);
-    int ret = vsnprintf(buf, sizeof(buf) - 1, fmt, args);
-    va_end(args);
-
     strcat(udata, buf);
 
     return ret;
@@ -767,7 +784,6 @@ static bool L_loadfile(lua_State *l, const char *lua_fname) {
     return ret == LUA_OK;
 }
 
-/*
 static bool L_checksyntax(const char *fname) {
     // {{{
     lua_State *l_tmp = NULL;
@@ -788,19 +804,21 @@ static bool L_checksyntax(const char *fname) {
     lua_close(l_tmp);
 #endif
 
+    trace("L_checksyntax: fname '%s', ok %s\n", fname, ok ? "true" : "false");
+
     return ok;
     // }}}
 }
-*/
+// */
 
 // fname содержит имя файла уровня без расширения.
 static void load(Stage_shot *st, const char *fname) {
     // Если файл скрипта отсутствует или содержит ошибки, то уровень 
     // не выгружать
     // XXX: Не работает
-    //if (!L_checksyntax(fname)) {
-        //return;
-    //}
+    if (!L_checksyntax(fname)) {
+        return;
+    }
 
     if (st->loaded) {
         unload(st);
@@ -820,6 +838,11 @@ static void load(Stage_shot *st, const char *fname) {
     char svg_fname[128] = {}, lua_fname[128];
     sprintf(svg_fname, "%s.svg", fname);
     sprintf(lua_fname, "%s.lua", fname);
+
+    trace(
+        "load: svg_fname '%s', lua_fname '%s'\n",
+        svg_fname, lua_fname
+    );
 
     strncpy(st->lua_fname, lua_fname, sizeof(st->lua_fname));
 
@@ -954,13 +977,19 @@ static void load(Stage_shot *st, const char *fname) {
     st->svg_bound.width = st->nsvg_img->width;
     st->svg_bound.height = st->nsvg_img->height;
 
-    // TODO: Почему-то не отображается
     segment_create(
         st->r, &st->wctx,
         (b2Vec2) { 0., st->nsvg_img->height },
         (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, }
     );
 
+    /*
+    sensor_create(
+        st->r, &st->wctx,
+        (b2Vec2) { 0., st->nsvg_img->height },
+        (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, }
+    );
+    */
 
     /*
     //float y = -200.;
@@ -998,6 +1027,12 @@ static void stage_shot_init(struct Stage_shot *st) {
     st->verbose = false;
     st->borders_gap_px = 0;
     st->line_thick = 10.;
+    st->color_background = (Color) {
+        .r = 218,
+        .g = 218,
+        .b = 67,
+        .a = 255,
+    };
 
     //load(st, "assets/magic_level_05");
     //load(st, "assets/magic_level_04");
@@ -1086,12 +1121,14 @@ static void L_call(lua_State *l, const char *func_name) {
     lua_getglobal(l, func_name);
     //trace("L_call: 2 [%s]\n", stack_dump(l));
     if (lua_pcall(l, 0, 0, 0) != LUA_OK)  {
-        trace(
+        if (mgc_verbose) {
+            trace(
                 "stage_shot_update: call '%s' was failed with '%s'\n", 
                 func_name, lua_tostring(l, -1)
-             );
+            );
+            exit(EXIT_FAILURE);
+        }
         lua_pop(l, 1); // скидываю сообщение об ошибке со стека
-        exit(EXIT_FAILURE);
     }
     //trace("L_call: 3 [%s]\n", stack_dump(l));
 }
@@ -1416,6 +1453,8 @@ static void shot_gui(Stage_shot *st) {
         igEndCombo();
     }
 
+    igSameLine(0., 0.);
+
     if (igButton("reload scene", zero)) {
         const char *selected_svg = get_selected_svg(st);
         trace("shot_gui: selected_svg '%s'\n", selected_svg);
@@ -1426,10 +1465,12 @@ static void shot_gui(Stage_shot *st) {
                 ""
             );
 
+            /*
             trace(
                 "shot_gui: selected_svg '%s', fname_noext '%s'\n",
                 selected_svg, fname_noext
              );
+            */
 
             load(st, fname_noext);
 
@@ -1438,15 +1479,37 @@ static void shot_gui(Stage_shot *st) {
         /*koh_search_files(&st->fss_svg);*/
     }
 
+    igSeparator();
+
+    if (igButton("reset camera", zero)) {
+        koh_cam_reset(&st->cam);
+    }
+
     igCheckbox("draw camera rect", &st->cam_draw_rect);
+    igSameLine(0., 10.);
+    igCheckbox("draw svg file bounds", &st->draw_bound);
+
     igSliderFloat("gap_radius", &st->gap_radius, -700., 700., "%.3f", 0);
     igSliderFloat(
         "circle radius", &st->circle_radius, 1., 70., "%.3f", 
         ImGuiSliderFlags_Logarithmic
     );
 
-    if (igButton("reset camera", zero)) {
-        koh_cam_reset(&st->cam);
+    static bool header_open = false;
+    ImGuiTreeNodeFlags heading_flags = ImGuiTreeNodeFlags_Bullet;
+
+    /*
+    igListBox_FnStrPtr(
+        "heading_flags", &heading_flags, getter, NULL, values_num , 10
+    );
+    */
+
+    //if (igCollapsingHeader_BoolPtr("colors", &header_open, heading_flags)) {
+    if (igCollapsingHeader_TreeNodeFlags("colors", heading_flags)) {
+        float color_background[4] = {};
+        vec4_from_color(color_background, st->color_background);
+        igColorPicker4("background", color_background, 0, NULL);
+        st->color_background = color_from_vec4(color_background);
     }
 
     bool changed = igSliderFloat(
@@ -1546,6 +1609,7 @@ const char *getter(void *data, int n) {
 int static style = 0;
 // }}}
 */
+
 
 const char *uint64_to_str_bin(uint64_t value) {
     static char buf[128] = {};
@@ -1914,14 +1978,16 @@ static void render_pass_svg(
             );
             //drawControlPts(path->pts, path->npts);
 
+            /*
             unsigned char *components = ((unsigned char*)&shape->stroke.color);
-
             Color color = {
                 .r = components[0],
                 .g = components[1],
                 .b = components[2],
                 .a = 255,
             };
+*/
+            Color color = RAYWHITE;
 
             for (int i = 0; i + 1 < points_num; i++) {
                 DrawLineEx(points[i], points[i + 1], line_thick, color);
@@ -1964,13 +2030,16 @@ static void render_pass_debug(Stage_shot *st) {
 }
 
 static void stage_shot_draw(Stage_shot *st) {
+    ClearBackground(st->color_background);
     BeginMode2D(st->cam);
 
     L_call(st->l, "draw_pre");
 
     render_pass_svg(st->nsvg_img, 1., st->line_thick);
     render_pass_box2d(st);
-    render_pass_bound(st);
+
+    if (st->draw_bound)
+        render_pass_bound(st);
 
     //DrawCircle(0., 0., 40., BLACK);
 
