@@ -16,8 +16,27 @@ print("fith level script, your are welcome!")
 local inspect = require "inspect"
 --local tabular = require "tabular".show
 
-local function on_sensor()
-    print("sensor_start:")
+-- TODO: Поддержка работы с сущностями.
+local function on_sensor_1()
+    print("on_sensor_start_1:")
+end
+
+local function on_sensor_2()
+    print("on_sensor_start_2:")
+end
+
+local function on_sensor_3()
+    print("on_sensor_3:")
+end
+
+-- e - lightuserdata?
+local function on_sensor_kill(e)
+    -- Какая-то работа с obj
+    -- obj - proxy obj для связки скрипта с ecs и убийства сущности
+
+    e_kill()
+
+    print("on_sensor_kill:")
 end
 
 -- Вызывает один раз после загрузки уровня
@@ -28,17 +47,22 @@ function load()
     mgc.sensor_add(
         "start",
         { x = 100, y = 100, radius = 100 },
-        on_sensor
+        on_sensor_1
     )
     mgc.sensor_add(
         "intermediate",
         { x = 1000, y = 700, radius = 700 },
-        on_sensor
+        on_sensor_2
     )
     mgc.sensor_add(
         "end",
         { x = 1000, y = 700, radius = 700 },
-        on_sensor
+        on_sensor_3
+    )
+    mgc.sensor_add(
+        "kill",
+        { x = 100, y = 700, radius = 700 },
+        on_sensor_kill
     )
 end
 
