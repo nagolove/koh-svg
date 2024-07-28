@@ -3,6 +3,14 @@
 
 package.path = package.path .. ";./*.lua"
 
+--[[
+package.сpath = package.сpath .. ";./*.so"
+-- Использовать только для отладки. Скорее всего не будет работать в WASM
+local cffi = require 'cffi'
+cffi.cdef("int printf(char const *fmt, ...);")
+ffi.C.printf("hello %s\n", "world")
+--]]
+
 print("fith level script, your are welcome!")
 
 local inspect = require "inspect"
