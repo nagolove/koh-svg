@@ -23,9 +23,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="1.148989"
-     inkscape:cx="-191.90784"
-     inkscape:cy="414.27725"
+     inkscape:zoom="1.6249158"
+     inkscape:cx="90.158516"
+     inkscape:cy="419.71405"
      inkscape:window-width="3840"
      inkscape:window-height="2125"
      inkscape:window-x="2560"
@@ -83,5 +83,34 @@
        d="m 11.608788,136.99637 c -5.9864546,37.72008 29.230789,-18.44997 38.72306,13.56302 3.828913,14.41541 7.483462,7.61691 13.650367,8.36474 25.131816,-3.25077 4.470906,8.1816 3.433226,13.8273 -4.56137,11.7598 -5.302996,11.46198 0.944739,14.8477 6.112604,2.91006 3.313711,7.32454 1.797505,10.54967 -22.952468,37.45633 -50.365509,6.68298 -50.365509,6.68298"
        id="path9-2"
        sodipodi:nodetypes="ccccccc" />
+    <path
+       style="fill:none;stroke:#000000;stroke-width:1.165"
+       d="m -63.236466,109.22286 c 4.776829,-23.743369 26.524275,-26.886963 40.95152,-11.560803 6.622232,7.034843 28.0886124,-52.934157 8.437291,-47.585717 -7.887772,2.146791 -12.559255,-11.533588 -15.561813,-18.47296 -3.759027,-8.687688 -7.832427,-17.885783 -16.129488,-19.877003 -4.524187,-1.085764 -12.756033,5.666391 -12.756033,5.666391"
+       id="path3"
+       sodipodi:nodetypes="csssac" />
+    <rect
+       style="font-variation-settings:normal;opacity:1;vector-effect:none;fill:#cdde87;fill-opacity:1;stroke:#000000;stroke-width:0.839633;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;-inkscape-stroke:none;stop-color:#000000;stop-opacity:1"
+       id="rect3"
+       width="10.482236"
+       height="9.4189215"
+       x="-37.737167"
+       y="199.49156"
+       ry="2.9045753" />
+    <rect
+       style="font-variation-settings:normal;vector-effect:none;fill:#cdde87;fill-opacity:1;stroke:#000000;stroke-width:1.165;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;-inkscape-stroke:none;stop-color:#000000"
+       id="rect3-2"
+       width="14.54421"
+       height="13.068851"
+       x="-34.902664"
+       y="58.99818"
+       ry="4.0301285" />
+    <rect
+       style="fill:#cdde87;fill-opacity:1;stroke:#000000;stroke-width:0.854902"
+       id="rect4"
+       width="8.0856562"
+       height="8.7266464"
+       x="98.654938"
+       y="88.473946"
+       ry="2.8985152" />
   </g>
 </svg>
