@@ -9,7 +9,7 @@
 #include "koh_components.h"
 #include "koh_cleanup.h"
 #include "koh_routine.h"
-#include <emmintrin.h>  // Заголовочный файл для SSE2
+#include <emmintrin.h>  // SSE2
 #include <immintrin.h>  // AVX
 #include <nmmintrin.h>  // popcnt
 #include "koh_lua_tools.h"
@@ -1190,7 +1190,7 @@ static void stage_shot_update(struct Stage_shot *st) {
     sensors_update(st);
     timerman_update(st->tm);
     koh_camera_process_mouse_drag(&(struct CameraProcessDrag) {
-            .mouse_btn = MOUSE_BUTTON_LEFT,
+            .mouse_btn = MOUSE_BUTTON_MIDDLE,
             .cam = &st->cam
     });
 
