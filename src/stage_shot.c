@@ -4,6 +4,8 @@
 
 #define NANOSVG_IMPLEMENTATION
 
+#define SENSOR_NAME_LEN 128
+
 // includes {{{
 //#include "koh_imgui.h"
 #include "koh_components.h"
@@ -44,10 +46,12 @@
 // }}}
 
 typedef struct Sensor {
-    char name[128];
+    char full_sensor_name[SENSOR_NAME_LEN];
 } Sensor;
 
 static bool mgc_verbose = false;
+// Число используемое для отладочной проверки того, что void* указатель 
+// действительно является Stage_shot
 static const uint64_t stage_shot_uniq_id = 4294967311;
 
 // components {{{
@@ -87,6 +91,29 @@ typedef struct Input {
     int active_gp;
 } Input;
 
+// definition structs {{{
+
+typedef struct SensorCircleDef {
+    // {{{
+    de_ecs   *r;
+    WorldCtx *wctx;
+    float    radius;
+    b2Vec2   pos;
+    char     full_sensor_name[SENSOR_NAME_LEN];
+    // }}}
+} SensorCircleDef;
+
+typedef struct CircleDef {
+    // {{{
+    de_ecs    *r;
+    WorldCtx  *wctx;
+    Rectangle rect;
+    Texture2D *tex;
+    Color     color;
+    b2BodyDef def_body_circle;
+    // }}}
+} CircleDef;
+
 typedef struct SegmentDef {
     // {{{
     Texture2D *tex;
@@ -98,13 +125,18 @@ typedef struct SegmentDef {
     // }}}
 } SegmentDef;
 
+// }}}
+
 typedef struct Stage_shot {
     Stage             parent;
     uint64_t          uniq_id;
     // {{{
     
     struct CheckUnderMouseOpts under_mouse_opts;
+
+    CircleDef          def_circle;
     SegmentDef         def_segment;
+    b2BodyDef          def_body_circle;
 
     /* 
     Уровень загружен - 
@@ -169,8 +201,8 @@ typedef struct Stage_shot {
     de_ecs            *r;
     Texture2D         tex_circle;
     Resource          res_list;
-    de_entity         borders[4];
-    uint32_t          borders_num;
+    //de_entity         borders[4];
+    //uint32_t          borders_num;
 
     FilesSearchResult fsr_svg;
     FilesSearchSetup  fss_svg;
@@ -187,7 +219,7 @@ typedef struct Stage_shot {
 Заменить несколь Луа модулей в koh на один файл koh_lua.
 // {{{
 Префикс функций в них - L_
-L_stack_dump()
+L_L_stack_dump()
 L_table_dump()
 L_rect_get()
 Обязательная возможность работы с несколькими экземплярами виртуальной машины.
@@ -199,7 +231,7 @@ L_rect_get()
 // }}}
  */
 static void L_call(lua_State *l, const char *func_name);
-static void load(Stage_shot *st, const char *fname);
+static void load(Stage_shot *st, const char *file_name);
 static void unload(Stage_shot *st);
 
 // {{{ basic callbacks
@@ -395,14 +427,6 @@ static void svg_shutdown_selected(FilesSearchResult *fsr) {
     }
 }
 
-typedef struct CircleDef {
-    de_ecs    *r;
-    WorldCtx  *wctx;
-    Rectangle rect;
-    Texture2D *tex;
-    Color     color;
-} CircleDef;
-
 static de_entity circle_create(CircleDef cd) {
     // {{{
     assert(cd.r);
@@ -440,7 +464,7 @@ static de_entity circle_create(CircleDef cd) {
 
     assert(bid);
 
-    b2BodyDef bd = b2DefaultBodyDef();
+    b2BodyDef bd = cd.def_body_circle;
     bd.userData = (void*)(uintptr_t)e;
     //bd.type = b2_staticBody;
     bd.type = b2_dynamicBody;
@@ -643,16 +667,19 @@ static void L_sensor_call(lua_State *l, const char *sensor_name) {
     Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
     assert(st);
 
-    trace("L_sensor_call: 0 [%s]\n", stack_dump(l));
+    trace("L_sensor_call: 0 [%s]\n", L_stack_dump(l));
 
     // Создать полное имя сенсора и по нему получить функцию обратного вызова
-    char full_sensor_name[128] = {};
-    sprintf(full_sensor_name, "sensor_%s", sensor_name);
+    char full_sensor_name[SENSOR_NAME_LEN] = {};
+    snprintf(
+        full_sensor_name, sizeof(full_sensor_name),
+        "sensor_%s", sensor_name
+    );
     lua_pushstring(l, full_sensor_name);
     lua_gettable(l, LUA_REGISTRYINDEX);
     assert(lua_isfunction(l, -1));
 
-    trace("L_sensor_call: 1 [%s]\n", stack_dump(l));
+    trace("L_sensor_call: 1 [%s]\n", L_stack_dump(l));
 
     //lua_pushvalue(l, 3);  // Поместить функцию на вершину стека
     //lua_pushstring(l, str);  // Поместить аргумент на вершину стека
@@ -665,13 +692,26 @@ static void L_sensor_call(lua_State *l, const char *sensor_name) {
         exit(EXIT_FAILURE);
     }
 
-    trace("L_sensor_call: 2 [%s]\n", stack_dump(l));
+    trace("L_sensor_call: 2 [%s]\n", L_stack_dump(l));
 
     lua_pop(l, 1);
 
     //lua_pushstring(l, full_sensor_name);
 }
 // */
+
+static int l_e_tostring(lua_State *l) {
+    Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+    assert(st->uniq_id == stage_shot_uniq_id);
+
+    // Получить аргумент функции
+    // Проверить аггумент на принадлежность к lightuserdata
+    trace("l_e_tostring:\n");
+
+    lua_pushstring(l, "de_null");
+
+    return 1;
+}
 
 static int l_gravity_set(lua_State *l) {
     assert(lua_islightuserdata(l, 1));
@@ -692,15 +732,48 @@ static int l_gravity_set(lua_State *l) {
     return 0;
 }
 
-static de_entity sensor_add_circle(
-    de_ecs *r, float radius, b2Vec2 pos
-) {
-    trace("sensor_add_circle:\n");
-    return de_null;
+static de_entity sensor_create_circle(SensorCircleDef scd) {
+    assert(scd.r);
+    assert(scd.wctx);
+    assert(strlen(scd.full_sensor_name) > 0);
+    assert(scd.radius > 0.);
+    assert(b2Vec2_IsValid(scd.pos));
+
+    de_entity e = de_create(scd.r);
+
+    b2BodyDef bd = b2DefaultBodyDef();
+    bd.type = b2_staticBody;
+    bd.userData = (void*)(intptr_t)e;
+    bd.position = scd.pos;
+
+    b2ShapeDef sd = b2DefaultShapeDef();
+    sd.userData= (void*)(intptr_t)e;
+    sd.isSensor = true;
+
+    b2BodyId *bid = de_emplace(scd.r, e, cp_type_sensor);
+    assert(bid);
+    *bid = b2CreateBody(scd.wctx->world, &bd);
+
+    //b2CreateSegmentShape(*bid, &sd, &seg);
+    b2CreateCircleShape(*bid, &sd, &(b2Circle) {
+        // XXX: Почему устанавливает положение тела в b2BodyDef.position и
+        // в форме, прикрепленной к телу?
+        .center = scd.pos,
+        .radius = scd.radius,
+    });
+
+    Sensor *sensor = de_emplace(scd.r, e, cp_type_sensor);
+    assert(sensor);
+    size_t sz = sizeof(sensor->full_sensor_name);
+    strncpy(sensor->full_sensor_name, scd.full_sensor_name, sz);
+
+    trace("sensor_create_circle:\n");
+
+    return e;
 }
 
-static int l_sensor_add(lua_State *l) {
-    printf("l_sensor_add: 1 [%s]\n", stack_dump(l));
+static int l_sensor_create(lua_State *l) {
+    printf("l_sensor_create: 1 [%s]\n", L_stack_dump(l));
 
     // Проверка и получение строки (первый аргумент)
     const char *sensor_name = luaL_checkstring(l, 1);
@@ -713,8 +786,8 @@ static int l_sensor_add(lua_State *l) {
     luaL_checktype(l, 3, LUA_TFUNCTION);
 
     trace(
-        "l_sensor_add: 1 sensor_name '%s', [%s]\n",
-        sensor_name, stack_dump(l)
+        "l_sensor_create: 1 sensor_name '%s', [%s]\n",
+        sensor_name, L_stack_dump(l)
     );
 
     char full_sensor_name[128] = {};
@@ -724,8 +797,8 @@ static int l_sensor_add(lua_State *l) {
     lua_settable(l, LUA_REGISTRYINDEX);
 
     trace(
-        "l_sensor_add: 2 sensor_name '%s', [%s]\n",
-        sensor_name, stack_dump(l)
+        "l_sensor_create: 2 sensor_name '%s', [%s]\n",
+        sensor_name, L_stack_dump(l)
     );
 
     Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
@@ -754,19 +827,27 @@ static int l_sensor_add(lua_State *l) {
 
     */
 
-    printf("l_sensor_add: 2 [%s]\n", stack_dump(l));
+    printf("l_sensor_create: 2 [%s]\n", L_stack_dump(l));
 
-    float radius = 0.;
-    b2Vec2 pos = {};
-    sensor_add_circle(st->r, radius, pos);
+    SensorCircleDef scd = {
+        .radius = 100.,
+        .pos = { 1000., 1000., },
+        .r = st->r,
+        .wctx = &st->wctx,
+    };
+    strncpy(scd.full_sensor_name, sensor_name, SENSOR_NAME_LEN);
 
-    // Возвращаемое значение функции (в данном примере ничего не возвращаем)
-    return 0;
+    // Возвращаемое значение функции - lightuserdata
+    de_entity e = sensor_create_circle(scd);
+    lua_pushlightuserdata(l, (void*)(uintptr_t)e);
+    
+    return 1;
 }
 
 const static luaL_Reg lua_funcs[] = {
-    { "sensor_add", l_sensor_add, },
+    { "sensor_create", l_sensor_create, },
     { "gravity_set", l_gravity_set, },
+    { "e_tostring", l_e_tostring, },
     { NULL, NULL},
 };
 
@@ -774,7 +855,7 @@ static void L_set_registry_ptr(lua_State *l, const char *name, void *ptr) {
 
     trace(
         "L_set_registry_ptr: 1 name '%s', ptr %p, [%s]\n",
-        name, ptr, stack_dump(l)
+        name, ptr, L_stack_dump(l)
     );
 
     lua_pushstring(l, name);
@@ -783,7 +864,7 @@ static void L_set_registry_ptr(lua_State *l, const char *name, void *ptr) {
 
     trace(
         "L_set_registry_ptr: 2 name '%s', ptr %p, [%s]\n",
-        name, ptr, stack_dump(l)
+        name, ptr, L_stack_dump(l)
     );
 
 }
@@ -841,6 +922,8 @@ static bool L_checksyntax(const char *fname) {
 }
 // */
 
+// {{{ Input
+
 static void inp_init(Input *inp) {
     assert(inp);
     int i = 10;
@@ -858,8 +941,6 @@ static void inp_init(Input *inp) {
         i--;
     }
 }
-
-// {{{ Input
 
 static bool inp_left(Input *inp) {
     assert(inp);
@@ -921,7 +1002,6 @@ static void load(Stage_shot *st, const char *fname) {
 
     // Если файл скрипта отсутствует или содержит ошибки, то уровень 
     // не выгружать
-    // XXX: Не работает
     if (!L_checksyntax(lua_fname)) {
         trace("load: syntax check failed\n");
         return;
@@ -934,10 +1014,6 @@ static void load(Stage_shot *st, const char *fname) {
 
     assert(st);
     assert(fname);
-
-    // TODO: Устанавливать значения из скрипта
-    st->grav_len = 9.8; 
-    st->circle_radius = 5.;
 
     st->gap_radius = 0.;
     koh_cam_reset(&st->cam);
@@ -958,6 +1034,9 @@ static void load(Stage_shot *st, const char *fname) {
     // {{{ CONSTANTS
     st->rot_delta_angle = 1.;
     st->circle_restinition = 0.;
+    // TODO: Устанавливать значения из скрипта
+    st->grav_len = 9.8; 
+    st->circle_radius = 5.;
     // }}}
 
     // {{{ Lua state 
@@ -972,29 +1051,29 @@ static void load(Stage_shot *st, const char *fname) {
     luaL_openlibs(*l);
 #endif
 
-    trace("load: new [%s]\n", stack_dump(*l));
+    trace("load: new [%s]\n", L_stack_dump(*l));
 
     L_set_registry_ptr(*l, "ptr_stage_shot", st);
 
-    trace("load: set stage ptr [%s]\n", stack_dump(*l));
+    trace("load: set stage ptr [%s]\n", L_stack_dump(*l));
 
     luaL_newlib(*l, lua_funcs); 
     lua_setglobal(*l, "mgc");
 
-    trace("load: setup 'mgc' table [%s]\n", stack_dump(*l));
+    trace("load: setup 'mgc' table [%s]\n", L_stack_dump(*l));
 
     L_loadfile(*l, lua_fname);
-
+    trace("load: loadfile done [%s]\n", L_stack_dump(*l));
     // }}}
 
-    trace("load: loadfile done [%s]\n", stack_dump(*l));
+    // input system {{{
     inp_init(&st->input);
-
     st->kb_drawer = input_kb_new(&(struct InputKbMouseDrawerSetup) {
         .btn_width = 70.,
     });
     koh_verbose_input = true;
     st->gp_drawer = input_gp_new();
+    // }}}
 
     st->tm = timerman_new(512, "shot_timers");
 
@@ -1020,7 +1099,7 @@ static void load(Stage_shot *st, const char *fname) {
     //exit(1);
 
     Resource *rl = &st->res_list;
-    st->tex_circle = res_tex_load(rl, "assets/magic_circle_01.png");
+    st->tex_circle = res_tex_load(rl, "assets/gfx/magic_circle_01.png");
     //st->tex_example = res_tex_load(rl, svg_fname);
 
     /*
@@ -1030,6 +1109,9 @@ static void load(Stage_shot *st, const char *fname) {
     st->tex_example = res_tex_load(rl, svg_fname);
     */
 
+    st->xrng = xorshift32_init();
+
+    // ecs setup {{{
     // Как de_ecs могла работать без зарегистрированных типов?
     bool prev_de_ecs_verbose = de_ecs_verbose;
     de_ecs_verbose = true;
@@ -1047,12 +1129,9 @@ static void load(Stage_shot *st, const char *fname) {
     de_ecs_register(st->r, cp_type_circle);
     de_ecs_register(st->r, cp_type_sensor);
     de_ecs_verbose = prev_de_ecs_verbose;
+    // }}}
 
-    st->nsvg_img = nsvgParseFromFile(svg_fname, "px", 96.0f);
-    assert(st->nsvg_img);
-
-    st->xrng = xorshift32_init();
-
+    // box2d initialization {{{
     b2WorldDef wd = b2DefaultWorldDef();
     wd.enableContinous = true;
     wd.enableSleep = true;
@@ -1066,14 +1145,17 @@ static void load(Stage_shot *st, const char *fname) {
     }, &st->wctx);
 
     set_gravity(st, st->cam.rotation);
+    // }}}
 
+    // svg file loading {{{
+    st->nsvg_img = nsvgParseFromFile(svg_fname, "px", 96.0f);
+    assert(st->nsvg_img);
     trace(
-        "load: svg size %fx%f\n",
-        st->nsvg_img->width,
-        st->nsvg_img->height
+        "load: svg size %fx%f\n", st->nsvg_img->width, st->nsvg_img->height
     );
     st->svg_bound.width = st->nsvg_img->width;
     st->svg_bound.height = st->nsvg_img->height;
+    // }}}
 
     timerman_add(st->tm, (struct TimerDef) {
         .duration = 1.5,
@@ -1083,13 +1165,7 @@ static void load(Stage_shot *st, const char *fname) {
         .on_stop = tmr_spawn_circle_stop,
     });
 
-    /*
-    Camera2D *cam = &st->cam;
-    cam->target.x = st->nsvg_img->width / 2.;
-    cam->target.y = st->nsvg_img->height / 2.;
-    */
-
-    //st->sensor_name2func = htable_new(NULL);
+    assert(st->r);
 
     // TODO: Передавать клавишу мыши
     st->under_mouse_opts = (struct CheckUnderMouseOpts) {
@@ -1130,7 +1206,7 @@ static void load(Stage_shot *st, const char *fname) {
 static void stage_shot_init(struct Stage_shot *st) {
     visual_tool_init(&st->tool_visual);
     st->tool_visual.mode = VIS_TOOL_RECTANGLE;
-
+    st->def_body_circle = b2DefaultBodyDef();
     st->cam_draw_rect = false;
     st->world_query_AABB = true;
     st->draw_sensors = false,
@@ -1146,7 +1222,7 @@ static void stage_shot_init(struct Stage_shot *st) {
     };
 
     // FIXME: Загружать уровень если файл скрипта отсутствует
-    load(st, "assets/magic_level_05");
+    load(st, "assets/magic_level_01");
     //load(st, "assets/magic_level_04");
     //load(st, "assets/magic_level_03");
     //load(st, "assets/magic_level_03");
@@ -1229,9 +1305,9 @@ static void rotate(Stage_shot *st, const float dangle) {
 // DONE:
 static void L_call(lua_State *l, const char *func_name) {
     assert(l);
-    //trace("L_call: 1 [%s]\n", stack_dump(l));
+    //trace("L_call: 1 [%s]\n", L_stack_dump(l));
     lua_getglobal(l, func_name);
-    //trace("L_call: 2 [%s]\n", stack_dump(l));
+    //trace("L_call: 2 [%s]\n", L_stack_dump(l));
     if (lua_pcall(l, 0, 0, 0) != LUA_OK)  {
         if (mgc_verbose) {
             trace(
@@ -1242,7 +1318,7 @@ static void L_call(lua_State *l, const char *func_name) {
         }
         lua_pop(l, 1); // скидываю сообщение об ошибке со стека
     }
-    //trace("L_call: 3 [%s]\n", stack_dump(l));
+    //trace("L_call: 3 [%s]\n", L_stack_dump(l));
 }
 
 static void sensors_update(Stage_shot *st) {
@@ -1260,7 +1336,7 @@ static void sensors_update(Stage_shot *st) {
         if (e != de_null && de_valid(st->r, e)) {
             Sensor *sensor = de_try_get(r, e, cp_type_sensor);
             if (sensor) {
-                L_sensor_call(st->l, sensor->name);
+                L_sensor_call(st->l, sensor->full_sensor_name);
             }
         }
     }
@@ -1290,7 +1366,8 @@ static void stage_shot_update(struct Stage_shot *st) {
 
     L_call(st->l, "update");
 
-    const CircleDef cd_default = {
+    st->def_circle = (CircleDef) {
+        .def_body_circle = st->def_body_circle,
         .r = st->r,
         //.tex = &st->tex_circle,
         .color = BLACK,
@@ -1300,7 +1377,7 @@ static void stage_shot_update(struct Stage_shot *st) {
 
     if (IsKeyPressed(KEY_C)) {
         float y = -200.;
-        CircleDef cd_tmp = cd_default;
+        CircleDef cd_tmp = st->def_circle;
         cd_tmp.rect = (Rectangle){ 50., y, st->circle_radius, 10., };
         circle_create(cd_tmp);
         //circle_create(st->r, &st->wctx, (Rectangle) { 250., y, radius, 10., });
@@ -1477,9 +1554,11 @@ static void box2d_actions_gui(struct Stage_shot *st) {
 
     igSameLine(0., 5.);
 
+    /*
     if (igButton("delete borders", (ImVec2){})) {
         remove_borders(&st->wctx, st->r, st->borders);
     }
+    */
 
     if (igButton("reset camera", (ImVec2){})) {
         koh_cam_reset(&st->cam);
@@ -1655,7 +1734,7 @@ static void shot_gui(Stage_shot *st) {
     );
     // */
 
-    //if (igCollapsingHeader_BoolPtr("colors", &header_open, heading_flags)) {
+    // TODO: Как сохранять цвета в скрипте?
     if (igCollapsingHeader_TreeNodeFlags("colors", heading_flags)) {
         float color_background[4] = {};
         vec4_from_color(color_background, st->color_background);
