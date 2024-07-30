@@ -82,12 +82,29 @@ const de_cp_type cp_type_sensor = {
 };
 // }}}
 
+typedef struct Input {
+    // Номер активного геймада или -1
+    int active_gp;
+} Input;
+
+typedef struct SegmentDef {
+    // {{{
+    Texture2D *tex;
+    Color col;
+    float thick;
+    b2Vec2 p1, p2;
+    de_ecs *r;
+    WorldCtx *wctx;
+    // }}}
+} SegmentDef;
+
 typedef struct Stage_shot {
     Stage             parent;
     uint64_t          uniq_id;
     // {{{
     
     struct CheckUnderMouseOpts under_mouse_opts;
+    SegmentDef         def_segment;
 
     /* 
     Уровень загружен - 
@@ -116,8 +133,9 @@ typedef struct Stage_shot {
                       rot_delta_angle,
                       // длина вектора гравитации
                       grav_len,
+
                       // толщина линии рисования уровня
-                      line_thick,
+                      //line_thick,
 
                       circle_radius;
 
@@ -131,7 +149,9 @@ typedef struct Stage_shot {
                       cam_draw_rect,
                       // границы поля svg файла
                       draw_bound;
-    int               borders_gap_px;
+    //int               borders_gap_px;
+
+    Input             input;
 
 #ifdef KOH_RLWR
     struct rlwr_t *rlwr; // Луа-состотяние с загруженными биндингами raylib'а
@@ -210,18 +230,8 @@ Stage *stage_shot_new(HotkeyStorage *hk_store) {
 }
 // }}}
 
-/*
-static void input_init(Stage_shot *st) {
-}
-
-static void input_shutdown(Stage_shot *st) {
-}
-*/
-
-//static void input_update(Stage_shot *st) {
-//}
-
 void inotify_script_changed(const char *fname, void *udata) {
+    // {{{
     inotifier_watch(fname, inotify_script_changed, udata);
 
     char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
@@ -237,9 +247,11 @@ void inotify_script_changed(const char *fname, void *udata) {
     // только потом выгружать сцену
     Stage_shot *st = udata;
     load(st, fname_noext);
+    // }}}
 }
 
 static bool query_world_draw(b2ShapeId shape_id, void* context) {
+    // {{{
     //trace("query_world_draw:\n");
     struct Stage_shot *st = context;
 
@@ -271,6 +283,7 @@ static bool query_world_draw(b2ShapeId shape_id, void* context) {
     }
 
     return true;
+    // }}}
 }
 
 struct CreatorCtx {
@@ -279,10 +292,11 @@ struct CreatorCtx {
     Stage_shot  *st;
 };
 
-static de_entity segment_create(
-    de_ecs *r, WorldCtx *wctx, b2Vec2 p1, b2Vec2 p2
-) {
-    b2Segment seg = { p1, p2, };
+static de_entity segment_create(SegmentDef segd) {
+    // {{{
+    assert(segd.r);
+    assert(segd.wctx);
+    b2Segment seg = { segd.p1, segd.p2, };
     float len_sq = b2Length(b2Sub(seg.point1, seg.point2));
 
     if (len_sq < FLT_EPSILON) {
@@ -293,30 +307,30 @@ static de_entity segment_create(
     b2BodyDef bd = b2DefaultBodyDef();
     bd.type = b2_staticBody;
 
-    de_entity e = de_create(r);
-
+    de_entity e = de_create(segd.r);
 
     bool prev_de_ecs_verbose = de_ecs_verbose;
     de_ecs_verbose = true;
-    b2BodyId *bid = de_emplace(r, e, cp_type_body);
+    b2BodyId *bid = de_emplace(segd.r, e, cp_type_body);
     de_ecs_verbose = prev_de_ecs_verbose;
 
-    *bid = b2CreateBody(wctx->world, &bd);
+    *bid = b2CreateBody(segd.wctx->world, &bd);
 
     b2ShapeDef sd = b2DefaultShapeDef();
     b2CreateSegmentShape(*bid, &sd, &seg);
 
     struct ShapeRenderOpts *r_opts = de_emplace(
-        r, e, cp_type_shape_render_opts
+        segd.r, e, cp_type_shape_render_opts
     );
 
-    r_opts->color = BLACK;
-    r_opts->tex = NULL;
-    r_opts->thick = 5.;
+    r_opts->color = segd.col;
+    r_opts->tex = segd.tex;
+    r_opts->thick = segd.thick;
 
     /*trace("segment_create: created\n");*/
 
     return e;
+    // }}}
 }
 
 static void body_creator_next_path(void *udata) {
@@ -332,14 +346,16 @@ static void body_creator_next_path(void *udata) {
 
 static void body_creator(float x, float y, void *udata) {
     struct CreatorCtx *ctx = udata;
-    WorldCtx *wctx = &ctx->st->wctx;
     Stage_shot *st = ctx->st;
     //trace("body_creator:\n");
 
     // TODO: Добавлять окружности в местах перегиба для более красивой рисовки
     // и что-бы мелкие шарики не застревали в щелях между прямыми кусками.
+    SegmentDef sd = st->def_segment;
     if (ctx->last_used) {
-        segment_create(st->r, wctx, ctx->last, (b2Vec2) { x, y });
+        sd.p1 = ctx->last;
+        sd.p2 = (b2Vec2) { x, y };
+        segment_create(sd);
     } else {
         ctx->last_used = true;
     }
@@ -788,9 +804,9 @@ static bool L_loadfile(lua_State *l, const char *lua_fname) {
         ret = lua_pcall(l, 0, LUA_MULTRET, 0);
         if (ret != LUA_OK) {
             trace(
-                    "L_loadfile: pcall file '%s' return code %d with %s\n",
-                    lua_fname, ret, lua_tostring(l, -1)
-                 );
+                "L_loadfile: pcall file '%s' return code %d with %s\n",
+                lua_fname, ret, lua_tostring(l, -1)
+            );
         } else
             trace("L_loadfile: script loaded\n");
     }
@@ -824,6 +840,78 @@ static bool L_checksyntax(const char *fname) {
     // }}}
 }
 // */
+
+static void inp_init(Input *inp) {
+    assert(inp);
+    int i = 10;
+    inp->active_gp = -1;
+    while (i > 0) {
+        trace(
+            "inp_init: gamepad %d was detected %s, name '%s' \n", i,
+            IsGamepadAvailable(i) ? "true" : "false", GetGamepadName(i)
+        );
+        const char *gp_name = GetGamepadName(i);
+        if (strstr(gp_name, "X-Box")) {
+            inp->active_gp = i;
+            break;
+        }
+        i--;
+    }
+}
+
+// {{{ Input
+
+static bool inp_left(Input *inp) {
+    assert(inp);
+    if (inp->active_gp != -1) {
+        return IsGamepadButtonDown(
+            inp->active_gp, GAMEPAD_BUTTON_RIGHT_FACE_LEFT
+        );
+    } 
+
+    // обработка клавиатуры
+    return IsKeyDown(KEY_Q);
+}
+
+static bool inp_right(Input* inp) {
+    assert(inp);
+    if (inp->active_gp != -1) {
+        return IsGamepadButtonDown(
+            inp->active_gp, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT
+        );
+    } 
+
+    // обработка клавиатуры
+    return IsKeyDown(KEY_W);
+}
+
+static float inp_cam_horizontal(Input *inp) {
+    assert(inp);
+    if (inp->active_gp != -1) {
+        return GetGamepadAxisMovement(inp->active_gp, GAMEPAD_AXIS_LEFT_X);
+    } 
+
+    // обработка клавиатуры
+    //return IsKeyDown(KEY_W);
+    return 0.f;
+}
+
+static float inp_cam_vertical(Input *inp) {
+    assert(inp);
+    if (inp->active_gp != -1) {
+        return GetGamepadAxisMovement(inp->active_gp, GAMEPAD_AXIS_LEFT_Y);
+    } 
+
+    // обработка клавиатуры
+    //return IsKeyDown(KEY_W);
+    return 0.f;
+}
+
+static void inp_update(Input *inp) {
+    assert(inp);
+}
+
+// }}}
 
 // fname содержит имя файла уровня без расширения.
 static void load(Stage_shot *st, const char *fname) {
@@ -897,16 +985,15 @@ static void load(Stage_shot *st, const char *fname) {
 
     L_loadfile(*l, lua_fname);
 
-    trace("load: loadfile done [%s]\n", stack_dump(*l));
-
-    //if (!ret) {
-        //trace("load: script not loaded, '%s'\n", lua_tostring(st->l, -1));
-    //}
     // }}}
+
+    trace("load: loadfile done [%s]\n", stack_dump(*l));
+    inp_init(&st->input);
 
     st->kb_drawer = input_kb_new(&(struct InputKbMouseDrawerSetup) {
         .btn_width = 70.,
     });
+    koh_verbose_input = true;
     st->gp_drawer = input_gp_new();
 
     st->tm = timerman_new(512, "shot_timers");
@@ -980,12 +1067,6 @@ static void load(Stage_shot *st, const char *fname) {
 
     set_gravity(st, st->cam.rotation);
 
-    svg_parse(st->nsvg_img, body_creator, body_creator_next_path,
-        &(struct CreatorCtx) {
-            .last_used = false,
-            .st = st,
-    });
-    
     trace(
         "load: svg size %fx%f\n",
         st->nsvg_img->width,
@@ -993,28 +1074,6 @@ static void load(Stage_shot *st, const char *fname) {
     );
     st->svg_bound.width = st->nsvg_img->width;
     st->svg_bound.height = st->nsvg_img->height;
-
-    segment_create(
-        st->r, &st->wctx,
-        (b2Vec2) { 0., st->nsvg_img->height },
-        (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, }
-    );
-
-    /*
-    sensor_create(
-        st->r, &st->wctx,
-        (b2Vec2) { 0., st->nsvg_img->height },
-        (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, }
-    );
-    */
-
-    /*
-    //float y = -200.;
-    box_create(st->r, &st->wctx, (Rectangle) { -50., y, 40., 10., });
-    box_create(st->r, &st->wctx, (Rectangle) { 250., y, 40., 10., });
-    box_create(st->r, &st->wctx, (Rectangle) { 450., y, 40., 10., });
-    box_create(st->r, &st->wctx, (Rectangle) { 650., y, 40., 10., });
-    */
 
     timerman_add(st->tm, (struct TimerDef) {
         .duration = 1.5,
@@ -1041,6 +1100,28 @@ static void load(Stage_shot *st, const char *fname) {
         .r = st->r,
     };
 
+    SegmentDef sd = {
+        .r = st->r,
+        .wctx = &st->wctx,
+        .p1 = { 0., st->nsvg_img->height },
+        .p2 = { GetScreenWidth(), st->nsvg_img->height, },
+        .thick = 5.,
+        .col = GREEN,
+        .tex = NULL,
+    };
+
+    st->def_segment = sd;
+
+    sd.thick = 15.f;
+    segment_create(sd);
+
+    svg_parse(
+        st->nsvg_img, body_creator, body_creator_next_path,
+        &(struct CreatorCtx) {
+            .last_used = false,
+            .st = st,
+    });
+
     L_call(st->l, "load");
 
     st->loaded = true;
@@ -1054,8 +1135,9 @@ static void stage_shot_init(struct Stage_shot *st) {
     st->world_query_AABB = true;
     st->draw_sensors = false,
     st->verbose = false;
-    st->borders_gap_px = 0;
-    st->line_thick = 10.;
+    //st->borders_gap_px = 0;
+    //st->line_thick = 10.;
+
     st->color_background = (Color) {
         .r = 218,
         .g = 218,
@@ -1185,6 +1267,7 @@ static void sensors_update(Stage_shot *st) {
 }
 
 static void stage_shot_update(struct Stage_shot *st) {
+    inp_update(&st->input);
     beh_check_under_mouse(&st->under_mouse_opts);
     visual_tool_update(&st->tool_visual, &st->cam);
     sensors_update(st);
@@ -1233,12 +1316,44 @@ static void stage_shot_update(struct Stage_shot *st) {
         st->cam.zoom += dzoom;
     }
 
-    // left
-    if (IsKeyDown(KEY_Q)) {
+    const float scroll_speed = 3.;
+    struct {
+        float (*inp_func)(Input *inp);
+        Vector2 delta;
+    } cam_map[] = {
+        { inp_cam_horizontal, {-scroll_speed, 0}, },
+        { inp_cam_vertical, {0., -scroll_speed}, },
+    };
+
+    for (int i = 0; i < sizeof(cam_map) / sizeof(cam_map[0]); i++) {
+        st->cam.offset = Vector2Add(
+            st->cam.offset, 
+            Vector2Scale(cam_map[i].delta, cam_map[i].inp_func(&st->input))
+        );
+    }
+
+    if (inp_left(&st->input)) {
         rotate(st, st->rot_delta_angle);
-    } else if (IsKeyDown(KEY_W)) {
+    } else if (inp_right(&st->input)) {
         rotate(st, -st->rot_delta_angle);
     }
+
+
+    // TODO: Получить координаты прямогульника в котором находятся 80-90%
+    // все шариков.
+    /*
+    de_cp_type types[] = { cp_type_circle, };
+    size_t types_num = sizeof(types) / sizeof(types[0]);
+    de_view v = de_view_create(st->r, types_num, types);
+    for (; de_view_valid(&v); de_view_next(&v)) {
+        b2BodyId *bid = de_view_get_safe(&v, cp_type_circle);
+        assert(bid);
+        b2Vec2 pos = b2Body_GetPosition(*bid);
+
+        float radius = 20.f;
+        DrawCircleV(b2Vec2_to_Vector2(pos), radius, BLUE);
+    }
+    // */
 }
 
 static void box2d_actions_gui(struct Stage_shot *st) {
@@ -1353,10 +1468,12 @@ static void box2d_actions_gui(struct Stage_shot *st) {
     }
     */
 
+    /*
     if (igButton("spawn borders", (ImVec2){})) {
         remove_borders(&st->wctx, st->r, st->borders);
         spawn_borders(&st->wctx, st->r, st->borders, st->borders_gap_px);
     }
+    */
 
     igSameLine(0., 5.);
 
@@ -1569,7 +1686,7 @@ static void shot_gui(Stage_shot *st) {
         set_gravity(st, st->cam.rotation);
     }
 
-    igSliderFloat("line thick", &st->line_thick, 1., 20., "%f", 0);
+    //igSliderFloat("line thick", &st->line_thick, 1., 20., "%f", 0);
 
     igEnd();
     // }}}
@@ -1929,6 +2046,7 @@ static void draw_path(
 
     if (closed) {
         /*rlVertex2f(pts[0], pts[1]);*/
+        //DrawCircle(pts[0], pts[1], 20.f, BLUE);
 
         //trace("++\n");
         if (*points_num + 1 < points_cap)
@@ -2021,11 +2139,14 @@ static void render_pass_svg(
                 .a = 255,
             };
 */
-            Color color = RAYWHITE;
+            Color color = RED;
 
-            for (int i = 0; i + 1 < points_num; i++) {
-                DrawLineEx(points[i], points[i + 1], line_thick, color);
-            }
+            // Линии не рисуются
+            //for (int i = 0; i + 1 < points_num; i++) {
+                //DrawLineEx(points[i], points[i + 1], line_thick, color);
+            //}
+           
+            // Рисование углов
             for (int i = 0; i < points_num; i++) {
                 DrawCircleV(points[i], line_thick / 2., color);
             }
@@ -2069,7 +2190,7 @@ static void stage_shot_draw(Stage_shot *st) {
 
     L_call(st->l, "draw_pre");
 
-    render_pass_svg(st->nsvg_img, 1., st->line_thick);
+    render_pass_svg(st->nsvg_img, 1., st->def_segment.thick * 3.f);
     render_pass_box2d(st);
 
     if (st->draw_bound)
