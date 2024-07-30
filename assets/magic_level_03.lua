@@ -1,6 +1,10 @@
 -- vim: set colorcolumn=85
 -- vim: fdm=marker
 
+
+-- XXX: Как для teal сделать загрузку модуля?
+--local mgc = require 'mgc'
+
 package.path = package.path .. ";./*.lua"
 
 print("fith level script, your are welcome!")
@@ -9,8 +13,9 @@ local random = math.random
 local inspect = require "inspect"
 --local tabular = require "tabular".show
 
-local function on_sensor()
-    print("sensor_start:")
+-- e - lightuserdata with de_entity
+local function on_sensor(e)
+    print("sensor_start:", e_tostring(e))
 end
 
 --print("_G", inspect(_G))
@@ -30,6 +35,8 @@ local rotation = 0
 local msg = "Congrats! You created your first window!";
 --RLAPI Vector2 MeasureTextEx(Font font, const char *text, float fontSize, float spacing);    // Measure string size for Font
 local msg_width = MeasureTextEx(fnt, msg, fnt_size, 0.)
+
+-- {{{ Фоновые приключения шариков
 
 -- gpt
 function catmullRom(p0, p1, p2, p3, t)
@@ -101,6 +108,12 @@ local function circles_create()
     return t
 end
 
+local function circles_draw(circles)
+    for i, circ in ipairs(circles) do
+        DrawCircle(circ.x, circ.y, circ.radius, circ.color)
+    end
+end
+
 local circles_time = 0
 
 local function circles_update(circles)
@@ -120,28 +133,21 @@ local function circles_update(circles)
         --print("circles_update: pos", inspect(pos))
         --circ.x = pos.x
         --circ.y = pos.y
+
+        circ.x = circ.x + random(-1, 1)
+        circ.y = circ.y + random(-1, 1)
     end
 end
+
+-- }}} 
 
 local circles = circles_create()
 
 function draw_pre()
     -- {{{
 
-        --[[
-    for i = 1, 100 do
-        DrawCircle(
-            random(1, GetScreenWidth()),
-            random(1, GetScreenHeight()) , 100, RED)
-    end
-    --]]
-    
-    for i, circ in ipairs(circles) do
-        print('circ', inspect(circ))
-        --DrawCircle(circ.x, circ.y, circ.radius, circ.color)
-        DrawCircle(circ.x, circ.y, circ.radius, BLUE)
-    end
-    
+    circles_draw(circles)
+
     --[[
     DrawTextPro(
         fnt, msg, pos, 
@@ -168,21 +174,22 @@ end
 
 -- Вызывает один раз после загрузки уровня
 function load()
-    print("load in script");
+    print("load: in script");
 
-    --[[
+    print(mgc.e_tostring(10))
+
     -- {{{ Добавляет сенсор с функцией обратного вызова
-    mgc.sensor_add(
+    mgc.sensor_create(
         "start",
         { x = 100, y = 100, radius = 100 },
         on_sensor
     )
-    mgc.sensor_add(
+    mgc.sensor_create(
         "intermediate",
         { x = 1000, y = 700, radius = 700 },
         on_sensor
     )
-    mgc.sensor_add(
+    mgc.sensor_create(
         "end",
         { x = 1000, y = 700, radius = 700 },
         on_sensor
