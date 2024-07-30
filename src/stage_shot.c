@@ -180,7 +180,9 @@ typedef struct Stage_shot {
                       // рисовать область камеры
                       cam_draw_rect,
                       // границы поля svg файла
-                      draw_bound;
+                      draw_bound,
+                      // рисовать векторыне кривые без привязки к физике
+                      draw_svg_lines;
     //int               borders_gap_px;
 
     Input             input;
@@ -262,21 +264,38 @@ Stage *stage_shot_new(HotkeyStorage *hk_store) {
 }
 // }}}
 
-void inotify_script_changed(const char *fname, void *udata) {
+void inotify_changed_svg(const char *fname, void *udata) {
     // {{{
-    inotifier_watch(fname, inotify_script_changed, udata);
+    inotifier_watch(fname, inotify_changed_svg, udata);
+    // }}}
+
+    char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
+        fname, "\\.svg", ""
+    );
+
+    trace(
+        "inotify_changed_svg: fname '%s', fname_noext '%s'\n",
+        fname, fname_noext
+    );
+
+    Stage_shot *st = udata;
+    load(st, fname_noext);
+    // }}}
+}
+
+void inotify_changed_script(const char *fname, void *udata) {
+    // {{{
+    inotifier_watch(fname, inotify_changed_script, udata);
 
     char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
         fname, "\\.lua", ""
     );
 
     trace(
-        "inotify_script_changed: fname '%s', fname_noext '%s'\n",
+        "inotify_changed_script: fname '%s', fname_noext '%s'\n",
         fname, fname_noext
     );
 
-    // XXX: Сперва проверить корректность загрузки скрипта, 
-    // только потом выгружать сцену
     Stage_shot *st = udata;
     load(st, fname_noext);
     // }}}
@@ -942,6 +961,18 @@ static void inp_init(Input *inp) {
     }
 }
 
+static bool inp_circle_create(Input *inp) {
+    assert(inp);
+    if (inp->active_gp != -1) {
+        return IsGamepadButtonPressed(
+            inp->active_gp, GAMEPAD_BUTTON_MIDDLE
+        );
+    } 
+
+    // обработка клавиатуры
+    return IsKeyPressed(KEY_C);
+}
+
 static bool inp_left(Input *inp) {
     assert(inp);
     if (inp->active_gp != -1) {
@@ -995,16 +1026,19 @@ static void inp_update(Input *inp) {
 // }}}
 
 // fname содержит имя файла уровня без расширения.
-static void load(Stage_shot *st, const char *fname) {
+static void load(Stage_shot *st, const char *file_name) {
+    assert(st);
+    assert(file_name);
+
     char svg_fname[128] = {}, lua_fname[128];
-    sprintf(svg_fname, "%s.svg", fname);
-    sprintf(lua_fname, "%s.lua", fname);
+    sprintf(svg_fname, "%s.svg", file_name);
+    sprintf(lua_fname, "%s.lua", file_name);
 
     // Если файл скрипта отсутствует или содержит ошибки, то уровень 
-    // не выгружать
-    if (!L_checksyntax(lua_fname)) {
+    // не выгружать, но перезагрузить всё состояния внутри Stage_shot
+    bool lua_is_correct = L_checksyntax(lua_fname);
+    if (!lua_is_correct) {
         trace("load: syntax check failed\n");
-        return;
     }
 
     if (st->loaded) {
@@ -1012,26 +1046,23 @@ static void load(Stage_shot *st, const char *fname) {
         st->loaded = false;
     }
 
-    assert(st);
-    assert(fname);
-
-    st->gap_radius = 0.;
-    koh_cam_reset(&st->cam);
-
-    st->r = de_ecs_make();
-
     trace(
         "load: svg_fname '%s', lua_fname '%s'\n",
         svg_fname, lua_fname
     );
 
+    koh_cam_reset(&st->cam);
+    st->sensors_killer = set_new(NULL);
+    st->xrng = xorshift32_init();
     strncpy(st->lua_fname, lua_fname, sizeof(st->lua_fname));
 
-    inotifier_watch(lua_fname, inotify_script_changed, st);
+    inotifier_watch(lua_fname, inotify_changed_script, st);
+    inotifier_watch(svg_fname, inotify_changed_svg, st);
 
     trace("load: svg_fname '%s'\n", svg_fname);
 
     // {{{ CONSTANTS
+    st->gap_radius = 0.;
     st->rot_delta_angle = 1.;
     st->circle_restinition = 0.;
     // TODO: Устанавливать значения из скрипта
@@ -1062,8 +1093,10 @@ static void load(Stage_shot *st, const char *fname) {
 
     trace("load: setup 'mgc' table [%s]\n", L_stack_dump(*l));
 
-    L_loadfile(*l, lua_fname);
-    trace("load: loadfile done [%s]\n", L_stack_dump(*l));
+    if (lua_is_correct) {
+        L_loadfile(*l, lua_fname);
+        trace("load: loadfile done [%s]\n", L_stack_dump(*l));
+    }
     // }}}
 
     // input system {{{
@@ -1074,10 +1107,6 @@ static void load(Stage_shot *st, const char *fname) {
     koh_verbose_input = true;
     st->gp_drawer = input_gp_new();
     // }}}
-
-    st->tm = timerman_new(512, "shot_timers");
-
-    st->sensors_killer = set_new(NULL);
 
     // {{{ File search setup
     st->fss_svg.deep = 2;
@@ -1090,14 +1119,14 @@ static void load(Stage_shot *st, const char *fname) {
 
     koh_search_files_shutdown(&st->fsr_svg);
     st->fsr_svg = koh_search_files(&st->fss_svg);
-    // }}}
 
     //koh_search_files_print(&st->fsr_svg);
     char buf[1024 * 5] = {};
     koh_search_files_print3(&st->fsr_svg, search_file_printer, buf);
 
-    //exit(1);
+    // }}}
 
+    // resources loading {{{
     Resource *rl = &st->res_list;
     st->tex_circle = res_tex_load(rl, "assets/gfx/magic_circle_01.png");
     //st->tex_example = res_tex_load(rl, svg_fname);
@@ -1108,10 +1137,12 @@ static void load(Stage_shot *st, const char *fname) {
     st->tex_example = res_tex_load(rl, "assets/magic_circle_01.png");
     st->tex_example = res_tex_load(rl, svg_fname);
     */
-
-    st->xrng = xorshift32_init();
+    
+    // }}}
 
     // ecs setup {{{
+    st->r = de_ecs_make();
+
     // Как de_ecs могла работать без зарегистрированных типов?
     bool prev_de_ecs_verbose = de_ecs_verbose;
     de_ecs_verbose = true;
@@ -1147,6 +1178,27 @@ static void load(Stage_shot *st, const char *fname) {
     set_gravity(st, st->cam.rotation);
     // }}}
 
+    // timers system {{{
+    st->tm = timerman_new(512, "shot_timers");
+    timerman_add(st->tm, (struct TimerDef) {
+        .duration = 1.5,
+        .sz = 0,
+        .udata = st,
+        .on_update = tmr_spawn_circle_update,
+        .on_stop = tmr_spawn_circle_stop,
+    });
+    // }}}
+
+    // {{{ definitions structs
+    st->def_segment = (SegmentDef) {
+        .r = st->r,
+        .wctx = &st->wctx,
+        .thick = 5.,
+        .col = GREEN,
+        .tex = NULL,
+    };
+    // }}}
+
     // svg file loading {{{
     st->nsvg_img = nsvgParseFromFile(svg_fname, "px", 96.0f);
     assert(st->nsvg_img);
@@ -1155,18 +1207,15 @@ static void load(Stage_shot *st, const char *fname) {
     );
     st->svg_bound.width = st->nsvg_img->width;
     st->svg_bound.height = st->nsvg_img->height;
+    svg_parse(
+        st->nsvg_img, body_creator, body_creator_next_path,
+        &(struct CreatorCtx) {
+            .last_used = false,
+            .st = st,
+    });
     // }}}
 
-    timerman_add(st->tm, (struct TimerDef) {
-        .duration = 1.5,
-        .sz = 0,
-        .udata = st,
-        .on_update = tmr_spawn_circle_update,
-        .on_stop = tmr_spawn_circle_stop,
-    });
-
     assert(st->r);
-
     // TODO: Передавать клавишу мыши
     st->under_mouse_opts = (struct CheckUnderMouseOpts) {
         .cam = st->cam,
@@ -1175,28 +1224,13 @@ static void load(Stage_shot *st, const char *fname) {
         .duration = 4.,
         .r = st->r,
     };
+    assert(st->under_mouse_opts.r);
 
-    SegmentDef sd = {
-        .r = st->r,
-        .wctx = &st->wctx,
-        .p1 = { 0., st->nsvg_img->height },
-        .p2 = { GetScreenWidth(), st->nsvg_img->height, },
-        .thick = 5.,
-        .col = GREEN,
-        .tex = NULL,
-    };
-
-    st->def_segment = sd;
-
+    SegmentDef sd = st->def_segment;
+    sd.p1 = (b2Vec2) { 0., st->nsvg_img->height };
+    sd.p2 = (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, };
     sd.thick = 15.f;
     segment_create(sd);
-
-    svg_parse(
-        st->nsvg_img, body_creator, body_creator_next_path,
-        &(struct CreatorCtx) {
-            .last_used = false,
-            .st = st,
-    });
 
     L_call(st->l, "load");
 
@@ -1342,6 +1376,34 @@ static void sensors_update(Stage_shot *st) {
     }
 }
 
+static void circles_rect_calculate(Stage_shot *st) {
+    // TODO: Получить координаты прямогульника в котором находятся 80-90%
+    // все шариков.
+    de_cp_type types[] = { cp_type_circle, cp_type_body, };
+    //de_cp_type types[] = { cp_type_circle, };
+    size_t types_num = sizeof(types) / sizeof(types[0]);
+    de_view v = de_view_create(st->r, types_num, types);
+    for (; de_view_valid(&v); de_view_next(&v)) {
+        //b2BodyId *bid = de_view_get_safe(&v, cp_type_body);
+        b2BodyId *bid = de_view_get(&v, cp_type_body);
+
+        assert(bid);
+        
+        if (b2Body_IsValid(*bid)) {
+            b2Vec2 pos = b2Body_GetPosition(*bid);
+            float radius = 20.f;
+
+            BeginMode2D(st->cam);
+            DrawCircleV(b2Vec2_to_Vector2(pos), radius, BLUE);
+            EndMode2D();
+
+            trace("stage_shot_update: body found\n");
+        } else {
+            //trace("stage_shot_update: invalid b2BodyId in de_view\n");
+        }
+    }
+}
+
 static void stage_shot_update(struct Stage_shot *st) {
     inp_update(&st->input);
     beh_check_under_mouse(&st->under_mouse_opts);
@@ -1375,7 +1437,7 @@ static void stage_shot_update(struct Stage_shot *st) {
         .wctx = &st->wctx,
     };
 
-    if (IsKeyPressed(KEY_C)) {
+    if (inp_circle_create(&st->input)) {
         float y = -200.;
         CircleDef cd_tmp = st->def_circle;
         cd_tmp.rect = (Rectangle){ 50., y, st->circle_radius, 10., };
@@ -1415,21 +1477,8 @@ static void stage_shot_update(struct Stage_shot *st) {
         rotate(st, -st->rot_delta_angle);
     }
 
+    circles_rect_calculate(st);
 
-    // TODO: Получить координаты прямогульника в котором находятся 80-90%
-    // все шариков.
-    /*
-    de_cp_type types[] = { cp_type_circle, };
-    size_t types_num = sizeof(types) / sizeof(types[0]);
-    de_view v = de_view_create(st->r, types_num, types);
-    for (; de_view_valid(&v); de_view_next(&v)) {
-        b2BodyId *bid = de_view_get_safe(&v, cp_type_circle);
-        assert(bid);
-        b2Vec2 pos = b2Body_GetPosition(*bid);
-
-        float radius = 20.f;
-        DrawCircleV(b2Vec2_to_Vector2(pos), radius, BLUE);
-    }
     // */
 }
 
@@ -1716,6 +1765,7 @@ static void shot_gui(Stage_shot *st) {
     igCheckbox("draw camera rect", &st->cam_draw_rect);
     igSameLine(0., 10.);
     igCheckbox("draw svg file bounds", &st->draw_bound);
+    igCheckbox("draw svg lines", &st->draw_svg_lines);
 
     igSliderFloat("gap_radius", &st->gap_radius, -700., 700., "%.3f", 0);
     igSliderFloat(
@@ -2187,24 +2237,30 @@ static void render_pass_box2d(Stage_shot *st) {
     );
 }
 
-static void render_pass_svg(
-    NSVGimage *img, float scale, float line_thick
-) {
-    assert(img);
-    assert(scale != 0.);
+typedef struct RenderPassSvg {
+    NSVGimage *img;
+    float     scale;
+    float     line_thick;
+    bool      draw_lines;
+} RenderPassSvg;
+
+static void render_pass_svg(RenderPassSvg rps) {
+    assert(rps.img);
+    assert(rps.scale > 0.);
+    assert(rps.line_thick > 0.f);
+
 	NSVGshape *shape;
 	NSVGpath  *path;
 
     Vector2 points[1024 * 2] = {};
     int points_cap = sizeof(points) / sizeof(points[0]);
     int points_num = 0;
-    assert(line_thick > 0.);
 
-    for (shape = img->shapes; shape != NULL; shape = shape->next) {
+    for (shape = rps.img->shapes; shape != NULL; shape = shape->next) {
         for (path = shape->paths; path != NULL; path = path->next) {
             draw_path(
                 path->pts, path->npts, path->closed, 1.5, 
-                scale,
+                rps.scale,
                 points, &points_num, points_cap
             );
             //drawControlPts(path->pts, path->npts);
@@ -2220,14 +2276,16 @@ static void render_pass_svg(
 */
             Color color = RED;
 
-            // Линии не рисуются
-            //for (int i = 0; i + 1 < points_num; i++) {
-                //DrawLineEx(points[i], points[i + 1], line_thick, color);
-            //}
+            if (rps.draw_lines)
+                for (int i = 0; i + 1 < points_num; i++) {
+                    DrawLineEx(
+                        points[i], points[i + 1], rps.line_thick, color
+                    );
+                }
            
             // Рисование углов
             for (int i = 0; i < points_num; i++) {
-                DrawCircleV(points[i], line_thick / 2., color);
+                DrawCircleV(points[i], rps.line_thick / 2., color);
             }
 
             // TODO: Рисовать недостающий сегмент
@@ -2269,13 +2327,19 @@ static void stage_shot_draw(Stage_shot *st) {
 
     L_call(st->l, "draw_pre");
 
-    render_pass_svg(st->nsvg_img, 1., st->def_segment.thick * 3.f);
+    render_pass_svg((RenderPassSvg) {
+        .img = st->nsvg_img,
+        .scale = 1.f,
+        .line_thick =  st->def_segment.thick * 3.f,
+        .draw_lines = st->draw_svg_lines,
+    });
     render_pass_box2d(st);
 
     if (st->draw_bound)
         render_pass_bound(st);
 
     //DrawCircle(0., 0., 40., BLACK);
+    circles_rect_calculate(st);
 
     L_call(st->l, "draw_post");
 
