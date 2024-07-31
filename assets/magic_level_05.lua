@@ -39,8 +39,17 @@ local function on_sensor_kill(e)
     print("on_sensor_kill:")
 end
 
+local frag_background
+
 -- Вызывает один раз после загрузки уровня
 function load()
+    frag_background = LoadShader(
+        nil, "assets/frag/raymarched_hexagonal_truchet.glsl"
+    )
+--RLAPI int GetShaderLocation(Shader shader, const char *uniformName);       // Get shader uniform location
+--RLAPI int GetShaderLocationAttrib(Shader shader, const char *attribName);  // Get shader attribute location
+--RLAPI void SetShaderValue(Shader shader, int locIndex, const void *value, int uniformType);               // Set shader uniform value
+
     print("load in script");
 
     -- Добавляет сенсор с функцией обратного вызова
@@ -87,9 +96,9 @@ local msg = "Congrats! You created your first window!";
 function draw_pre()
     -- {{{
         
-    --RLAPI void DrawTextEx(Font font, const char *text, Vector2 position, float fontSize, float spacing, Color tint); // Draw text using font and additional parameters
-    --pos.x
---RLAPI void DrawTextPro(Font font, const char *text, Vector2 position, Vector2 origin, float rotation, float fontSize, float spacing, Color tint); // Draw text using Font and pro parameters (rotation)
+    --BeginShaderMode(frag_background)
+    --DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight())
+    --EndShaderMode()
 
     local msg_width = MeasureTextEx(fnt, msg, fnt_size_actual, 0.)
     local shadow_delta = Vector2(2., 1.);
