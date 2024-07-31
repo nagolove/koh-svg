@@ -191,7 +191,7 @@ typedef struct Stage_shot {
     struct rlwr_t *rlwr; // Луа-состотяние с загруженными биндингами raylib'а
 #endif
     lua_State         *l;
-    char              lua_fname[128], svg_fname[128];
+    char              lua_fname[128], svg_fname[128], dirname[128];
 
     Color             color_background;
     Camera2D          cam;
@@ -264,10 +264,22 @@ Stage *stage_shot_new(HotkeyStorage *hk_store) {
 }
 // }}}
 
+void inotify_newfile(const char *fname, void *udata) {
+    // {{{
+    inotifier_watch(fname, inotify_newfile, udata);
+
+    trace("inotify_newfile: fname '%s'\n", fname);
+
+    Stage_shot *st = udata;
+    // Обновить список файлов уровня
+    koh_search_files_shutdown(&st->fsr_svg);
+    st->fsr_svg = koh_search_files(&st->fss_svg);
+    // }}}
+}
+
 void inotify_changed_svg(const char *fname, void *udata) {
     // {{{
     inotifier_watch(fname, inotify_changed_svg, udata);
-    // }}}
 
     char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
         fname, "\\.svg", ""
@@ -584,6 +596,7 @@ static void unload(Stage_shot *st) {
 
     inotifier_watch_remove(st->lua_fname);
     inotifier_watch_remove(st->svg_fname);
+    inotifier_watch_remove(st->dirname);
 
     if (st->l) {
 #ifdef KOH_RLWR
@@ -1032,6 +1045,7 @@ static void load(Stage_shot *st, const char *file_name) {
     assert(file_name);
 
     //char svg_fname[128] = {}, lua_fname[128];
+    sprintf(st->dirname, "%s", koh_extract_path(file_name));
     sprintf(st->svg_fname, "%s.svg", file_name);
     sprintf(st->lua_fname, "%s.lua", file_name);
 
@@ -1048,8 +1062,8 @@ static void load(Stage_shot *st, const char *file_name) {
     }
 
     trace(
-        "load: svg_fname '%s', lua_fname '%s'\n",
-        st->svg_fname, st->lua_fname
+        "load: file_name '%s', svg_fname '%s', lua_fname '%s', dirname '%s'\n",
+        file_name, st->svg_fname, st->lua_fname, st->dirname
     );
 
     koh_cam_reset(&st->cam);
@@ -1059,6 +1073,7 @@ static void load(Stage_shot *st, const char *file_name) {
 
     inotifier_watch(st->lua_fname, inotify_changed_script, st);
     inotifier_watch(st->svg_fname, inotify_changed_svg, st);
+    inotifier_watch(st->dirname, inotify_newfile, st);
 
     // {{{ CONSTANTS
     st->gap_radius = 0.;
@@ -1237,6 +1252,7 @@ static void load(Stage_shot *st, const char *file_name) {
     }
 
     L_call(st->l, "load");
+    inotifier_list();
 
     st->loaded = true;
 }
@@ -1258,7 +1274,7 @@ static void stage_shot_init(struct Stage_shot *st) {
         .b = 67,
         .a = 255,
     };
-
+   
     // FIXME: Загружать уровень если файл скрипта отсутствует
     load(st, "assets/magic_level_01");
     //load(st, "assets/magic_level_04");
@@ -1401,7 +1417,7 @@ static void circles_rect_calculate(Stage_shot *st) {
             DrawCircleV(b2Vec2_to_Vector2(pos), radius, BLUE);
             EndMode2D();
 
-            trace("stage_shot_update: body found\n");
+            //trace("stage_shot_update: body found\n");
         } else {
             //trace("stage_shot_update: invalid b2BodyId in de_view\n");
         }
