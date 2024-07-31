@@ -191,7 +191,7 @@ typedef struct Stage_shot {
     struct rlwr_t *rlwr; // Луа-состотяние с загруженными биндингами raylib'а
 #endif
     lua_State         *l;
-    char              lua_fname[256];
+    char              lua_fname[128], svg_fname[128];
 
     Color             color_background;
     Camera2D          cam;
@@ -583,6 +583,7 @@ static void unload(Stage_shot *st) {
         return;
 
     inotifier_watch_remove(st->lua_fname);
+    inotifier_watch_remove(st->svg_fname);
 
     if (st->l) {
 #ifdef KOH_RLWR
@@ -1030,13 +1031,13 @@ static void load(Stage_shot *st, const char *file_name) {
     assert(st);
     assert(file_name);
 
-    char svg_fname[128] = {}, lua_fname[128];
-    sprintf(svg_fname, "%s.svg", file_name);
-    sprintf(lua_fname, "%s.lua", file_name);
+    //char svg_fname[128] = {}, lua_fname[128];
+    sprintf(st->svg_fname, "%s.svg", file_name);
+    sprintf(st->lua_fname, "%s.lua", file_name);
 
     // Если файл скрипта отсутствует или содержит ошибки, то уровень 
     // не выгружать, но перезагрузить всё состояния внутри Stage_shot
-    bool lua_is_correct = L_checksyntax(lua_fname);
+    bool lua_is_correct = L_checksyntax(st->lua_fname);
     if (!lua_is_correct) {
         trace("load: syntax check failed\n");
     }
@@ -1048,18 +1049,16 @@ static void load(Stage_shot *st, const char *file_name) {
 
     trace(
         "load: svg_fname '%s', lua_fname '%s'\n",
-        svg_fname, lua_fname
+        st->svg_fname, st->lua_fname
     );
 
     koh_cam_reset(&st->cam);
     st->sensors_killer = set_new(NULL);
     st->xrng = xorshift32_init();
-    strncpy(st->lua_fname, lua_fname, sizeof(st->lua_fname));
+    //strncpy(st->lua_fname, st->lua_fname, sizeof(st->lua_fname));
 
-    inotifier_watch(lua_fname, inotify_changed_script, st);
-    inotifier_watch(svg_fname, inotify_changed_svg, st);
-
-    trace("load: svg_fname '%s'\n", svg_fname);
+    inotifier_watch(st->lua_fname, inotify_changed_script, st);
+    inotifier_watch(st->svg_fname, inotify_changed_svg, st);
 
     // {{{ CONSTANTS
     st->gap_radius = 0.;
@@ -1094,7 +1093,7 @@ static void load(Stage_shot *st, const char *file_name) {
     trace("load: setup 'mgc' table [%s]\n", L_stack_dump(*l));
 
     if (lua_is_correct) {
-        L_loadfile(*l, lua_fname);
+        L_loadfile(*l, st->lua_fname);
         trace("load: loadfile done [%s]\n", L_stack_dump(*l));
     }
     // }}}
@@ -1129,7 +1128,6 @@ static void load(Stage_shot *st, const char *file_name) {
     // resources loading {{{
     Resource *rl = &st->res_list;
     st->tex_circle = res_tex_load(rl, "assets/gfx/magic_circle_01.png");
-    //st->tex_example = res_tex_load(rl, svg_fname);
 
     /*
     XXX: Есть ли в таком коде утечка памяти? 
@@ -1200,19 +1198,23 @@ static void load(Stage_shot *st, const char *file_name) {
     // }}}
 
     // svg file loading {{{
-    st->nsvg_img = nsvgParseFromFile(svg_fname, "px", 96.0f);
-    assert(st->nsvg_img);
-    trace(
-        "load: svg size %fx%f\n", st->nsvg_img->width, st->nsvg_img->height
-    );
-    st->svg_bound.width = st->nsvg_img->width;
-    st->svg_bound.height = st->nsvg_img->height;
-    svg_parse(
-        st->nsvg_img, body_creator, body_creator_next_path,
-        &(struct CreatorCtx) {
-            .last_used = false,
-            .st = st,
-    });
+    st->nsvg_img = nsvgParseFromFile(st->svg_fname, "px", 96.0f);
+    if (st->nsvg_img) {
+        trace(
+            "load: svg size %fx%f\n",
+            st->nsvg_img->width, st->nsvg_img->height
+        );
+        st->svg_bound.width = st->nsvg_img->width;
+        st->svg_bound.height = st->nsvg_img->height;
+        svg_parse(
+            st->nsvg_img, body_creator, body_creator_next_path,
+            &(struct CreatorCtx) {
+                .last_used = false,
+                .st = st,
+        });
+    } else {
+        trace("load: could not load '%s'\n", st->svg_fname);
+    }
     // }}}
 
     assert(st->r);
@@ -1226,11 +1228,13 @@ static void load(Stage_shot *st, const char *file_name) {
     };
     assert(st->under_mouse_opts.r);
 
-    SegmentDef sd = st->def_segment;
-    sd.p1 = (b2Vec2) { 0., st->nsvg_img->height };
-    sd.p2 = (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, };
-    sd.thick = 15.f;
-    segment_create(sd);
+    if (st->nsvg_img) {
+        SegmentDef sd = st->def_segment;
+        sd.p1 = (b2Vec2) { 0., st->nsvg_img->height };
+        sd.p2 = (b2Vec2) { GetScreenWidth(), st->nsvg_img->height, };
+        sd.thick = 15.f;
+        segment_create(sd);
+    }
 
     L_call(st->l, "load");
 
@@ -1709,7 +1713,9 @@ static void shot_gui(Stage_shot *st) {
 
     bool open = true;
     ImGuiWindowFlags flags = 0;
-    igBegin("magic", &open, flags);
+    char header[128 * 3] = {};
+    sprintf(header, "magic [%s|%s]", st->lua_fname, st->svg_fname);
+    igBegin(header, &open, flags);
 
     ImGuiComboFlags combo_flags = 0;
     if (igBeginCombo("scenes", get_selected_svg(st), combo_flags)) {
@@ -2300,21 +2306,26 @@ static void render_pass_svg(RenderPassSvg rps) {
 }
 
 static void render_pass_debug(Stage_shot *st) {
-    Vector2 center = { st->nsvg_img->width / 2., st->nsvg_img->height / 2.};
-    DrawCircleV(center, 30., WHITE);
+    if (st->nsvg_img) {
+        Vector2 center = { 
+            st->nsvg_img->width / 2.,
+            st->nsvg_img->height / 2.
+        };
+        DrawCircleV(center, 30., WHITE);
 
-    const float grav_scale = 10., line_thick = 10.;
-    Vector2 line_end = Vector2Add(
-        center, 
-        Vector2Scale(b2Vec2_to_Vector2(st->gravity), grav_scale)
-    );
-    DrawCircleV(line_end, 20., BLACK);
-    DrawLineEx(
-        center,
-        line_end,
-        line_thick,
-        BLUE
-    );
+        const float grav_scale = 10., line_thick = 10.;
+        Vector2 line_end = Vector2Add(
+            center, 
+            Vector2Scale(b2Vec2_to_Vector2(st->gravity), grav_scale)
+        );
+        DrawCircleV(line_end, 20., BLACK);
+        DrawLineEx(
+            center,
+            line_end,
+            line_thick,
+            BLUE
+        );
+    }
 
     WorldCtx *wctx = &st->wctx;
     if (wctx->is_dbg_draw)
@@ -2327,12 +2338,15 @@ static void stage_shot_draw(Stage_shot *st) {
 
     L_call(st->l, "draw_pre");
 
-    render_pass_svg((RenderPassSvg) {
-        .img = st->nsvg_img,
-        .scale = 1.f,
-        .line_thick =  st->def_segment.thick * 3.f,
-        .draw_lines = st->draw_svg_lines,
-    });
+    if (st->nsvg_img) {
+        render_pass_svg((RenderPassSvg) {
+            .img = st->nsvg_img,
+            .scale = 1.f,
+            .line_thick =  st->def_segment.thick * 3.f,
+            .draw_lines = st->draw_svg_lines,
+        });
+    }
+
     render_pass_box2d(st);
 
     if (st->draw_bound)
