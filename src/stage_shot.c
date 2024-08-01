@@ -8,6 +8,7 @@
 
 // includes {{{
 //#include "koh_imgui.h"
+#include "koh_shadertoy.h"
 #include "koh_components.h"
 #include "koh_cleanup.h"
 #include "koh_routine.h"
@@ -137,6 +138,10 @@ typedef struct Stage_shot {
     CircleDef          def_circle;
     SegmentDef         def_segment;
     b2BodyDef          def_body_circle;
+
+
+    Shader             shader_back; // Пример задника
+    ShadertoyCtx       shadertoy_cmn;
 
     /* 
     Уровень загружен - 
@@ -877,11 +882,45 @@ static int l_sensor_create(lua_State *l) {
     return 1;
 }
 
+static int l_shadertoy_init(lua_State *l) {
+    trace("l_shadertoy_init: [%s]\n", L_stack_dump(l));
+
+    Shader *shader = luaL_checkudata(l, -1, "Shader");
+
+    ShadertoyCtx *ctx = lua_newuserdata(l, sizeof(*ctx));
+    luaL_newmetatable(l, "ShadertoyCtx");
+    shadertoy_init(ctx, *shader);
+    
+    trace("l_shadertoy_init: [%s]\n", L_stack_dump(l));
+
+    //return 1;
+    return 0;
+}
+
+static int l_shadertoy_pass(lua_State *l) {
+    //Shader *shader = luaL_checkudata(l, -1, "Shader");
+    ShadertoyCtx *ctx = luaL_checkudata(l, -1, "ShadertoyCtx");
+    luaL_checktype(l, -2, LUA_TNUMBER);
+    luaL_checktype(l, -3, LUA_TNUMBER);
+
+    // XXX: Проследи правильност номеров аргументов.
+    int rt_width = lua_tonumber(l, -2),
+        rt_heigth = lua_tonumber(l, -3);
+
+    shadertoy_pass(ctx, rt_width, rt_heigth);
+
+    return 0;
+}
+
 const static luaL_Reg lua_funcs[] = {
+    // {{{
     { "sensor_create", l_sensor_create, },
     { "gravity_set", l_gravity_set, },
     { "e_tostring", l_e_tostring, },
+    { "shadertoy_pass", l_shadertoy_pass, },
+    { "shadertoy_init", l_shadertoy_init, },
     { NULL, NULL},
+    // }}}
 };
 
 static void L_set_registry_ptr(lua_State *l, const char *name, void *ptr) {
@@ -1142,7 +1181,14 @@ static void load(Stage_shot *st, const char *file_name) {
 
     // resources loading {{{
     Resource *rl = &st->res_list;
+
     st->tex_circle = res_tex_load(rl, "assets/gfx/magic_circle_01.png");
+
+    st->shader_back = res_shader_load(
+        rl, "assets/frag/raymarched_hexagonal_truchet.glsl"
+    );
+
+    shadertoy_init(&st->shadertoy_cmn, st->shader_back);
 
     /*
     XXX: Есть ли в таком коде утечка памяти? 
@@ -1252,6 +1298,7 @@ static void load(Stage_shot *st, const char *file_name) {
     }
 
     L_call(st->l, "load");
+
     inotifier_list();
 
     st->loaded = true;
@@ -2353,6 +2400,12 @@ static void stage_shot_draw(Stage_shot *st) {
     BeginMode2D(st->cam);
 
     L_call(st->l, "draw_pre");
+
+    Rectangle screen = { 0., 0., GetScreenWidth(), GetScreenHeight() };
+    BeginShaderMode(st->shader_back);
+    shadertoy_pass(&st->shadertoy_cmn, screen.width, screen.height);
+    DrawRectangleRec(screen, WHITE);
+    EndShaderMode();
 
     if (st->nsvg_img) {
         render_pass_svg((RenderPassSvg) {
