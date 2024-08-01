@@ -5,8 +5,19 @@ package.path = package.path .. ";./*.lua"
 local random = math.random
 local inspect = require "inspect"
 
+local function on_sensor_1(e)
+    print(e_tosting(e))
+end
+
 function load()
     print('load')
+
+    mgc.sensor_create("sensor_01", {
+        x = 100,
+        y = 200,
+        radius = 200,
+    }, on_sensor_1)
+
 end
 
 function unload()
