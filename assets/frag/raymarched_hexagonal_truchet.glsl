@@ -1,5 +1,19 @@
-/*
+// vim: set colorcolumn=85
+// vim: fdm=marker
 
+#version 430
+
+uniform float iTime;
+uniform vec3 iResolution;
+
+//in vec2 fragTexCoord;
+in vec2 fragTexCoord;
+
+// Output fragment color
+out vec4 finalColor;
+
+/*
+   // {{{
 	Raymarched Hexagonal Truchet
 	----------------------------
 
@@ -25,7 +39,7 @@
 	... which, in turn, was based on:
 	hexagonal tiling - mattz
 	https://www.shadertoy.com/view/4d2GzV
-
+    // }}}
 */
 
 
@@ -41,7 +55,7 @@
 // Just to complicate things slightly, I'm performing the final value folding steps outside of this
 // function in order to color things in sections... It's not that important.
 float heightMap(in vec2 p) { 
-    
+    // {{{
     p *= 3.;
     
 	// Hexagonal coordinates.
@@ -77,13 +91,11 @@ float heightMap(in vec2 p) {
     //c = sqrt(c);
     //c = cos(c*6.283*1.) + cos(c*6.283*2.);
     //return (clamp(c*.6+.5, 0., 1.));
-
+    // }}}
 }
 
 // Raymarching an XY-plane - raised a little by the hexagonal Truchet heightmap. Pretty standard.
 float map(vec3 p){
-    
-    
     float c = heightMap(p.xy); // Height map.
     // Wrapping, or folding the height map values over, to produce the nicely lined-up, wavy patterns.
     c = cos(c*6.2831589) + cos(c*6.2831589*2.);
@@ -93,14 +105,12 @@ float map(vec3 p){
     // Back plane, placed at vec3(0., 0., 1.), with plane normal vec3(0., 0., -1).
     // Adding some height to the plane from the heightmap. Not much else to it.
     return 1. - p.z - c*.025;
-
-    
 }
 
 // The normal function with some edge detection and curvature rolled into it. Sometimes, it's possible to 
 // get away with six taps, but we need a bit of epsilon value variance here, so there's an extra six.
 vec3 getNormal(vec3 p, inout float edge, inout float crv) { 
-	
+    // {{{
     vec2 e = vec2(.01, 0); // Larger epsilon for greater sample spread, thus thicker edges.
 
     // Take some distance function measurements from either side of the hit point on all three axes.
@@ -133,8 +143,8 @@ vec3 getNormal(vec3 p, inout float edge, inout float crv) {
     // Return the normal.
     // Standard, normalized gradient mearsurement.
     return normalize(vec3(d1 - d2, d3 - d4, d5 - d6));
+    // }}}
 }
-
 
 
 // I keep a collection of occlusion routines... OK, that sounded really nerdy. :)
@@ -265,15 +275,14 @@ float Voronoi(in vec2 p){
     
 }
 
-void mainImage( out vec4 fragColor, in vec2 fragCoord ){
-    
+void main(){
     
     // Unit directional ray - Coyote's observation.
 
     // XXX: hardcoded
-    vec2 iResolution = vec2(1920 * 2, 1080 * 2);
+    //vec2 iResolution = vec2(1920 * 2, 1080 * 2);
 
-    vec3 rd = normalize(vec3(2.*fragCoord - iResolution.xy, iResolution.y));
+    vec3 rd = normalize(vec3(2.*fragTexCoord - iResolution.xy, iResolution.y));
 
     float tm = iTime/2.;
     // Rotate the XY-plane back and forth. Note that sine and cosine are kind of rolled into one.
@@ -381,5 +390,5 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord ){
 
 
     // Rough gamma correction, then present to the screen.
-	fragColor = vec4(sqrt(clamp(col, 0., 1.)), 1.);
+	finalColor = vec4(sqrt(clamp(col, 0., 1.)), 1.);
 }
