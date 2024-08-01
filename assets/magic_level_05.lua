@@ -39,13 +39,16 @@ local function on_sensor_kill(e)
     print("on_sensor_kill:")
 end
 
-local frag_background
+local   frag_background,   -- userdata by Sol
+        frag_shadertoy_ctx -- userdata
 
 -- Вызывает один раз после загрузки уровня
 function load()
     frag_background = LoadShader(
         nil, "assets/frag/raymarched_hexagonal_truchet.glsl"
     )
+    frag_shadertoy_ctx = mgc.shadertoy_init(frag_background);
+
 --RLAPI int GetShaderLocation(Shader shader, const char *uniformName);       // Get shader uniform location
 --RLAPI int GetShaderLocationAttrib(Shader shader, const char *attribName);  // Get shader attribute location
 --RLAPI void SetShaderValue(Shader shader, int locIndex, const void *value, int uniformType);               // Set shader uniform value
@@ -96,9 +99,11 @@ local msg = "Congrats! You created your first window!";
 function draw_pre()
     -- {{{
         
-    --BeginShaderMode(frag_background)
-    --DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight())
-    --EndShaderMode()
+    local w, h = GetScreenWidth(), GetScreenHeight()
+    BeginShaderMode(frag_background)
+    mgc.shadertoy_pass(frag_shadertoy_ctx, w, h);
+    DrawRectangle(0, 0, w, h)
+    EndShaderMode()
 
     local msg_width = MeasureTextEx(fnt, msg, fnt_size_actual, 0.)
     local shadow_delta = Vector2(2., 1.);
