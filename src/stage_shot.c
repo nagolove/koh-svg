@@ -140,7 +140,11 @@ typedef struct Stage_shot {
     b2BodyDef          def_body_circle;
 
 
-    Shader             shader_back; // Пример задника
+    Shader             // Пример задника 
+                       shader_back,
+                       // Простейшая программа, для отладки
+                       shader_basic;
+
     ShadertoyCtx       shadertoy_cmn;
 
     /* 
@@ -742,10 +746,16 @@ static int l_e_tostring(lua_State *l) {
     Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
     assert(st->uniq_id == stage_shot_uniq_id);
 
+    luaL_checktype(l, 1, LUA_TLIGHTUSERDATA);
+
+    de_entity e = (intptr_t)lua_touserdata(l, 1);
+    
+    uint32_t ver = de_entity_version(e);
+    uint32_t id = de_entity_identifier(e);
+    trace("l_e_tostring: ver %u, id %u\n", ver, id);
+
     // Получить аргумент функции
     // Проверить аггумент на принадлежность к lightuserdata
-    trace("l_e_tostring:\n");
-
     lua_pushstring(l, "de_null");
 
     return 1;
@@ -1186,6 +1196,9 @@ static void load(Stage_shot *st, const char *file_name) {
 
     st->shader_back = res_shader_load(
         rl, "assets/frag/raymarched_hexagonal_truchet.glsl"
+    );
+    st->shader_basic = res_shader_load(
+        rl, "assets/frag/basic.glsl"
     );
 
     shadertoy_init(&st->shadertoy_cmn, st->shader_back);
@@ -2314,9 +2327,13 @@ typedef struct RenderPassSvg {
 } RenderPassSvg;
 
 static void render_pass_svg(RenderPassSvg rps) {
-    assert(rps.img);
+    // {{{
     assert(rps.scale > 0.);
     assert(rps.line_thick > 0.f);
+
+    if (!rps.img) {
+        return;
+    }
 
 	NSVGshape *shape;
 	NSVGpath  *path;
@@ -2342,7 +2359,7 @@ static void render_pass_svg(RenderPassSvg rps) {
                 .b = components[2],
                 .a = 255,
             };
-*/
+            */
             Color color = RED;
 
             if (rps.draw_lines)
@@ -2365,7 +2382,7 @@ static void render_pass_svg(RenderPassSvg rps) {
             points_num = 0;
         }
     }
-
+    // }}}
 }
 
 static void render_pass_debug(Stage_shot *st) {
@@ -2395,26 +2412,41 @@ static void render_pass_debug(Stage_shot *st) {
         b2World_Draw(wctx->world, &wctx->world_dbg_draw);
 }
 
+/*
+static void render_pass_shader_background(Stage_shot *st) {
+    Rectangle screen = { 0., 0., GetScreenWidth(), GetScreenHeight() };
+    BeginShaderMode(st->shader_back);
+    shadertoy_pass(&st->shadertoy_cmn, screen.width, screen.height);
+    DrawRectangleRec(screen, WHITE);
+    EndShaderMode();
+}
+
+static void render_pass_shader_basic(Stage_shot *st) {
+    Rectangle screen = { -1000., 0., 1000., 1000. };
+    BeginShaderMode(st->shader_basic);
+    shadertoy_pass_custom(
+        &st->shadertoy_cmn, st->shader_basic, screen.width, screen.height
+    );
+    DrawRectangleRec(screen, WHITE);
+    EndShaderMode();
+}
+// */
+
 static void stage_shot_draw(Stage_shot *st) {
     ClearBackground(st->color_background);
     BeginMode2D(st->cam);
 
     L_call(st->l, "draw_pre");
 
-    Rectangle screen = { 0., 0., GetScreenWidth(), GetScreenHeight() };
-    BeginShaderMode(st->shader_back);
-    shadertoy_pass(&st->shadertoy_cmn, screen.width, screen.height);
-    DrawRectangleRec(screen, WHITE);
-    EndShaderMode();
+    //render_pass_shader_background(st);
+    //render_pass_shader_basic(st);
 
-    if (st->nsvg_img) {
-        render_pass_svg((RenderPassSvg) {
-            .img = st->nsvg_img,
-            .scale = 1.f,
-            .line_thick =  st->def_segment.thick * 3.f,
-            .draw_lines = st->draw_svg_lines,
-        });
-    }
+    render_pass_svg((RenderPassSvg) {
+        .img = st->nsvg_img,
+        .scale = 1.f,
+        .line_thick =  st->def_segment.thick * 3.f,
+        .draw_lines = st->draw_svg_lines,
+    });
 
     render_pass_box2d(st);
 
