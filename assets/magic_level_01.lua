@@ -57,3 +57,8 @@ end
 function draw_post()
     --DrawCircle(100, 100, rad, RED)
 end
+
+return {
+    name = "",
+    description = "",
+}
