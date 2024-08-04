@@ -1039,11 +1039,12 @@ static bool inp_circle_create(Input *inp) {
 static bool inp_left(Input *inp) {
     assert(inp);
     if (inp->active_gp != -1) {
-        return IsGamepadButtonDown(
+        if (IsGamepadButtonDown(
             inp->active_gp, GAMEPAD_BUTTON_RIGHT_FACE_LEFT
-        );
+        ))
+            return true;
     } 
-
+    
     // обработка клавиатуры
     return IsKeyDown(KEY_Q);
 }
@@ -1051,9 +1052,10 @@ static bool inp_left(Input *inp) {
 static bool inp_right(Input* inp) {
     assert(inp);
     if (inp->active_gp != -1) {
-        return IsGamepadButtonDown(
+        if (IsGamepadButtonDown(
             inp->active_gp, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT
-        );
+        )) 
+            return true;
     } 
 
     // обработка клавиатуры
