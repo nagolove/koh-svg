@@ -59,6 +59,6 @@ function draw_post()
 end
 
 return {
-    name = "",
-    description = "",
+    name = "Пробный уровень",
+    description = "Провести хотя-бы один шар из точки А в точку Б.",
 }
