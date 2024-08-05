@@ -215,9 +215,9 @@ typedef struct Stage_shot {
     //de_entity         borders[4];
     //uint32_t          borders_num;
 
-    FilesSearchResult fsr_svg;
-    FilesSearchSetup  fss_svg;
-    bool              *selected_svg;
+    FilesSearchResult fsr_lua;
+    FilesSearchSetup  fss_lua;
+    bool              *selected_lua;
 
     // b2ShapeId при соприкосновении с которыми тела удаляются
     koh_Set           *sensors_killer;
@@ -281,8 +281,8 @@ void inotify_newfile(const char *fname, void *udata) {
 
     Stage_shot *st = udata;
     // Обновить список файлов уровня
-    koh_search_files_shutdown(&st->fsr_svg);
-    st->fsr_svg = koh_search_files(&st->fss_svg);
+    koh_search_files_shutdown(&st->fsr_lua);
+    st->fsr_lua = koh_search_files(&st->fss_lua);
     // }}}
 }
 
@@ -441,9 +441,9 @@ static void svg_begin_search(FilesSearchResult *fsr) {
     Stage_shot *st = fsr->udata;
     assert(st);
 
-    if (st->selected_svg) {
-        free(st->selected_svg);
-        st->selected_svg = NULL;
+    if (st->selected_lua) {
+        free(st->selected_lua);
+        st->selected_lua = NULL;
     }
 }
 
@@ -451,9 +451,9 @@ static void svg_end_search(FilesSearchResult *fsr) {
     Stage_shot *st = fsr->udata;
     assert(st);
 
-    st->selected_svg = calloc(fsr->num, sizeof(st->selected_svg[0]));
+    st->selected_lua = calloc(fsr->num, sizeof(st->selected_lua[0]));
     if (fsr->num) {
-        st->selected_svg[0] = true;
+        st->selected_lua[0] = true;
     }
 }
 
@@ -461,9 +461,9 @@ static void svg_shutdown_selected(FilesSearchResult *fsr) {
     Stage_shot *st = fsr->udata;
     assert(st);
 
-    if (st->selected_svg) {
-        free(st->selected_svg);
-        st->selected_svg = NULL;
+    if (st->selected_lua) {
+        free(st->selected_lua);
+        st->selected_lua = NULL;
     }
 }
 
@@ -955,6 +955,7 @@ static bool L_loadfile(lua_State *l, const char *lua_fname) {
     assert(l);
     assert(lua_fname);
 
+    trace("L_loadfile: [%s]\n", L_stack_dump(l));
     //trace("L_loadfile: |'%s|\n", koh_backtrace_get());
 
     int ret = luaL_loadfile(l, lua_fname);
@@ -973,6 +974,23 @@ static bool L_loadfile(lua_State *l, const char *lua_fname) {
         } else
             trace("L_loadfile: script loaded\n");
     }
+
+    if (lua_istable(l, -1)) {
+        lua_getfield(l, -1, "name");
+        const char *name = lua_tostring(l, -1);
+        lua_pop(l, 1);
+
+        lua_getfield(l, -1, "description");
+        const char *description = lua_tostring(l, -1);
+        lua_pop(l, 1);
+
+        trace(
+            "L_loadfile: name '%s', description '%s'\n",
+            name, description
+        );
+    }
+
+    trace("L_loadfile: [%s]\n", L_stack_dump(l));
 
     return ret == LUA_OK;
 }
@@ -1174,20 +1192,20 @@ static void load(Stage_shot *st, const char *file_name) {
     // }}}
 
     // {{{ File search setup
-    st->fss_svg.deep = 2;
-    st->fss_svg.path = "assets";
-    st->fss_svg.regex_pattern = ".*\\.svg$";
-    st->fss_svg.on_search_begin = svg_begin_search;
-    st->fss_svg.on_search_end = svg_end_search;
-    st->fss_svg.on_shutdown = svg_shutdown_selected;
-    st->fss_svg.udata = st;
+    st->fss_lua.deep = 2;
+    st->fss_lua.path = "assets";
+    st->fss_lua.regex_pattern = "magic_level_\\d\\d.*\\.lua$";
+    st->fss_lua.on_search_begin = svg_begin_search;
+    st->fss_lua.on_search_end = svg_end_search;
+    st->fss_lua.on_shutdown = svg_shutdown_selected;
+    st->fss_lua.udata = st;
 
-    koh_search_files_shutdown(&st->fsr_svg);
-    st->fsr_svg = koh_search_files(&st->fss_svg);
+    koh_search_files_shutdown(&st->fsr_lua);
+    st->fsr_lua = koh_search_files(&st->fss_lua);
 
     //koh_search_files_print(&st->fsr_svg);
     char buf[1024 * 5] = {};
-    koh_search_files_print3(&st->fsr_svg, search_file_printer, buf);
+    koh_search_files_print3(&st->fsr_lua, search_file_printer, buf);
 
     // }}}
 
@@ -1196,6 +1214,7 @@ static void load(Stage_shot *st, const char *file_name) {
 
     st->tex_circle = res_tex_load(rl, "assets/gfx/magic_circle_01.png");
 
+    // TODO: Перезагружаемые шейдера будут доступны только с С стороны.
     st->shader_back = res_shader_load(
         rl, "assets/frag/raymarched_hexagonal_truchet.glsl"
     );
@@ -1735,10 +1754,10 @@ static void box2d_actions_gui(struct Stage_shot *st) {
     // }}}
 }
 
-static char *get_selected_svg(Stage_shot *st) {
-    for (int i = 0; i < st->fsr_svg.num; i++) 
-        if (st->selected_svg[i])
-            return st->fsr_svg.names[i];
+static char *get_selected_lua(Stage_shot *st) {
+    for (int i = 0; i < st->fsr_lua.num; i++) 
+        if (st->selected_lua[i])
+            return st->fsr_lua.names[i];
     return NULL;
 }
 
@@ -1796,17 +1815,17 @@ static void shot_gui(Stage_shot *st) {
     igBegin(header, &open, flags);
 
     ImGuiComboFlags combo_flags = 0;
-    if (igBeginCombo("scenes", get_selected_svg(st), combo_flags)) {
-        for (int i = 0; i < st->fsr_svg.num; ++i) {
+    if (igBeginCombo("scenes", get_selected_lua(st), combo_flags)) {
+        for (int i = 0; i < st->fsr_lua.num; ++i) {
             ImGuiSelectableFlags selectable_flags = 0;
             if (igSelectable_BoolPtr(
-                    st->fsr_svg.names[i], &st->selected_svg[i],
+                    st->fsr_lua.names[i], &st->selected_lua[i],
                     selectable_flags, (ImVec2){}
                 )) {
                 
-                for (int j = 0; j < st->fsr_svg.num; ++j) {
+                for (int j = 0; j < st->fsr_lua.num; ++j) {
                     if (i != j)
-                        st->selected_svg[j] = false;
+                        st->selected_lua[j] = false;
                 }
             }
         }
@@ -1817,21 +1836,20 @@ static void shot_gui(Stage_shot *st) {
     igSameLine(0., 0.);
 
     if (igButton("reload scene", zero)) {
-        const char *selected_svg = get_selected_svg(st);
-        trace("shot_gui: selected_svg '%s'\n", selected_svg);
-        if (selected_svg && strlen(selected_svg)) {
+        const char *selected_lua = get_selected_lua(st);
+        trace("shot_gui: selected_lua '%s'\n", selected_lua);
+        if (selected_lua && strlen(selected_lua)) {
             char *fname_noext cleanup(cleanup_char) = koh_str_sub_alloc(
-                selected_svg,
-                "\\.svg",
+                selected_lua,
+                "\\.lua",
                 ""
             );
 
-            /*
             trace(
-                "shot_gui: selected_svg '%s', fname_noext '%s'\n",
-                selected_svg, fname_noext
+                "shot_gui: selected_lua '%s', fname_noext '%s'\n",
+                selected_lua, fname_noext
              );
-            */
+            // */
 
             load(st, fname_noext);
 
@@ -2472,7 +2490,7 @@ static void stage_shot_shutdown(struct Stage_shot *st) {
     visual_tool_shutdown(&st->tool_visual);
     input_gp_free(st->gp_drawer);
     input_kb_free(st->kb_drawer);
-    koh_search_files_shutdown(&st->fsr_svg);
+    koh_search_files_shutdown(&st->fsr_lua);
 
     unload(st);
 }
