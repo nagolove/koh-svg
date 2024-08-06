@@ -934,13 +934,26 @@ static int l_shadertoy_pass(lua_State *l) {
     return 0;
 }
 
+// Проходит по таблице реестра Луа, находит все легкие данные пользователя с 
+// именем соотвествующим регулярному выражению и вызывает для этих данных
+// функцию обратного вызова.
+void L_registry_iter_lightud_regex(
+    lua_State *l,
+    const char *pattern,
+    bool (*fn)(lua_State *l, void *lightud) 
+) {
+    // TODO: Добавить возможность прерывания цикла поиска
+    // TODO: Добавить возможность удаления из реестра текущих 
+    //       данных пользователя
+}
+
 // Создает испускатель частиц(кружков)
 // Добавляет легкие данные пользователя в LUA_REGISTRYINDEX
 static int l_emmiter_create(lua_State *l) {
     trace("l_emmiter_create: [%s]\n", L_stack_dump(l));
 
     Emmiter *emm = calloc(1, sizeof(*emm));
-    // TODO: Освобождение памяти
+    // TODO: Освобождение памяти при выгрузке уровня
     char name[128] = {};
     L_registry_ptr_set(l, name, emm);
 
