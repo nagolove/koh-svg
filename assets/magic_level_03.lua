@@ -200,3 +200,9 @@ function load()
     --circles = circles_create()
 end
 
+
+
+return {
+    name = "Виноградная лоза",
+    description = "Доведи шар до отмеченной позиции.",
+}

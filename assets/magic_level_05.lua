@@ -142,3 +142,8 @@ function update()
     --print("update: dt", GetFrameTime())
 end
 
+
+return {
+    name = "Торжество изолиний",
+    description = "Провести хотя-бы один шар из позиции А в позицию Б.",
+}
