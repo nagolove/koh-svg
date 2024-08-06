@@ -50,6 +50,10 @@ typedef struct Sensor {
     char full_sensor_name[SENSOR_NAME_LEN];
 } Sensor;
 
+typedef struct Emmiter {
+    Vector2 position;
+} Emmiter;
+
 static bool mgc_verbose = false;
 // Число используемое для отладочной проверки того, что void* указатель 
 // действительно является Stage_shot
@@ -135,10 +139,12 @@ typedef struct Stage_shot {
     
     struct CheckUnderMouseOpts under_mouse_opts;
 
+    // Базовые параметры используемые при создании объектов.
     CircleDef          def_circle;
     SegmentDef         def_segment;
     b2BodyDef          def_body_circle;
 
+    char               lvl_name[1024], lvl_description[1024];
 
     Shader             // Пример задника 
                        shader_back,
@@ -242,6 +248,9 @@ L_rect_get()
 // }}}
  */
 static void L_call(lua_State *l, const char *func_name);
+static void L_registry_ptr_set(lua_State *l, const char *name, void *ptr);
+static void *L_registry_ptr_get(lua_State *l, const char *name);
+
 static void load(Stage_shot *st, const char *file_name);
 static void unload(Stage_shot *st);
 
@@ -607,6 +616,9 @@ static void unload(Stage_shot *st) {
     inotifier_watch_remove(st->svg_fname);
     inotifier_watch_remove(st->dirname);
 
+    memset(st->lvl_name, 0, sizeof(st->lvl_name));
+    memset(st->lvl_description, 0, sizeof(st->lvl_description));
+
     if (st->l) {
 #ifdef KOH_RLWR
         rlwr_free(st->rlwr);
@@ -682,7 +694,7 @@ static int search_file_printer(void *udata, const char *fmt, ...) {
     return ret;
 }
 
-static void *L_get_registry_ptr(lua_State *l, const char *name) {
+static void *L_registry_ptr_get(lua_State *l, const char *name) {
     assert(l);
     assert(name);
     lua_pushstring(l, name);
@@ -706,7 +718,7 @@ static void *L_get_registry_ptr(lua_State *l, const char *name) {
 static void L_sensor_call(lua_State *l, const char *sensor_name) {
     trace("L_sensor_call: sensor_name '%s'\n", sensor_name);
 
-    Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+    Stage_shot *st = L_registry_ptr_get(l, "ptr_stage_shot");
     assert(st);
 
     trace("L_sensor_call: 0 [%s]\n", L_stack_dump(l));
@@ -743,7 +755,7 @@ static void L_sensor_call(lua_State *l, const char *sensor_name) {
 // */
 
 static int l_e_tostring(lua_State *l) {
-    Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+    Stage_shot *st = L_registry_ptr_get(l, "ptr_stage_shot");
     assert(st->uniq_id == stage_shot_uniq_id);
 
     luaL_checktype(l, 1, LUA_TLIGHTUSERDATA);
@@ -769,7 +781,7 @@ static int l_gravity_set(lua_State *l) {
     if (gravity) {
         trace("l_setgravity: gravity %s\n", Vector2_tostr(*gravity));
 
-        Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+        Stage_shot *st = L_registry_ptr_get(l, "ptr_stage_shot");
         assert(st);
 
         b2World_SetGravity(st->wctx.world, Vector2_to_Vec2(*gravity));
@@ -849,7 +861,7 @@ static int l_sensor_create(lua_State *l) {
         sensor_name, L_stack_dump(l)
     );
 
-    Stage_shot *st = L_get_registry_ptr(l, "ptr_stage_shot");
+    Stage_shot *st = L_registry_ptr_get(l, "ptr_stage_shot");
     assert(st);
 
     /*
@@ -922,6 +934,21 @@ static int l_shadertoy_pass(lua_State *l) {
     return 0;
 }
 
+// Создает испускатель частиц(кружков)
+// Добавляет легкие данные пользователя в LUA_REGISTRYINDEX
+static int l_emmiter_create(lua_State *l) {
+    trace("l_emmiter_create: [%s]\n", L_stack_dump(l));
+
+    Emmiter *emm = calloc(1, sizeof(*emm));
+    // TODO: Освобождение памяти
+    char name[128] = {};
+    L_registry_ptr_set(l, name, emm);
+
+    trace("l_emmiter_create: [%s]\n", L_stack_dump(l));
+    return 0;
+}
+
+// TODO: Добавить описания функций для Луа стороны
 const static luaL_Reg lua_funcs[] = {
     // {{{
     { "sensor_create", l_sensor_create, },
@@ -929,11 +956,12 @@ const static luaL_Reg lua_funcs[] = {
     { "e_tostring", l_e_tostring, },
     { "shadertoy_pass", l_shadertoy_pass, },
     { "shadertoy_init", l_shadertoy_init, },
+    { "emmiter_create", l_emmiter_create, },
     { NULL, NULL},
     // }}}
 };
 
-static void L_set_registry_ptr(lua_State *l, const char *name, void *ptr) {
+static void L_registry_ptr_set(lua_State *l, const char *name, void *ptr) {
 
     trace(
         "L_set_registry_ptr: 1 name '%s', ptr %p, [%s]\n",
@@ -973,21 +1001,6 @@ static bool L_loadfile(lua_State *l, const char *lua_fname) {
             );
         } else
             trace("L_loadfile: script loaded\n");
-    }
-
-    if (lua_istable(l, -1)) {
-        lua_getfield(l, -1, "name");
-        const char *name = lua_tostring(l, -1);
-        lua_pop(l, 1);
-
-        lua_getfield(l, -1, "description");
-        const char *description = lua_tostring(l, -1);
-        lua_pop(l, 1);
-
-        trace(
-            "L_loadfile: name '%s', description '%s'\n",
-            name, description
-        );
     }
 
     trace("L_loadfile: [%s]\n", L_stack_dump(l));
@@ -1167,7 +1180,7 @@ static void load(Stage_shot *st, const char *file_name) {
 
     trace("load: new [%s]\n", L_stack_dump(*l));
 
-    L_set_registry_ptr(*l, "ptr_stage_shot", st);
+    L_registry_ptr_set(*l, "ptr_stage_shot", st);
 
     trace("load: set stage ptr [%s]\n", L_stack_dump(*l));
 
@@ -1179,6 +1192,25 @@ static void load(Stage_shot *st, const char *file_name) {
     if (lua_is_correct) {
         L_loadfile(*l, st->lua_fname);
         trace("load: loadfile done [%s]\n", L_stack_dump(*l));
+
+        if (lua_istable(*l, -1)) {
+            lua_getfield(*l, -1, "name");
+            const char *name = lua_tostring(*l, -1);
+            lua_pop(*l, 1);
+
+            lua_getfield(*l, -1, "description");
+            const char *description = lua_tostring(*l, -1);
+            lua_pop(*l, 1);
+
+            trace(
+                "L_loadfile: name '%s', description '%s'\n",
+                name, description
+            );
+
+            strcpy(st->lvl_name, name);
+            strcpy(st->lvl_description, name);
+        }
+
     }
     // }}}
 
@@ -1539,6 +1571,11 @@ static void stage_shot_update(struct Stage_shot *st) {
     };
 
     if (inp_circle_create(&st->input)) {
+        // TODO: Применить эммитер
+        /*
+            Каждый эммитер имеет имя.
+            Управляется передачей команды по этому имени
+         */
         float y = -200.;
         CircleDef cd_tmp = st->def_circle;
         cd_tmp.rect = (Rectangle){ 50., y, st->circle_radius, 10., };
