@@ -934,17 +934,87 @@ static int l_shadertoy_pass(lua_State *l) {
     return 0;
 }
 
+enum RegistryIter {
+    REGISTRY_ITER_BREAK,    // 0
+    REGISTRY_ITER_NEXT,     // 1
+    REGISTRY_ITER_REMOVE,
+};
+
+typedef struct RegistryIterCtx {
+    lua_State *l;
+    const char *key;
+    void *lightud, *ud;
+} RegistryIterCtx;
+
 // Проходит по таблице реестра Луа, находит все легкие данные пользователя с 
 // именем соотвествующим регулярному выражению и вызывает для этих данных
 // функцию обратного вызова.
 void L_registry_iter_lightud_regex(
     lua_State *l,
     const char *pattern,
-    bool (*fn)(lua_State *l, void *lightud) 
+    enum RegistryIter (*fn)(RegistryIterCtx *ctx),
+    void *ud
 ) {
+    assert(l);
+    assert(pattern);
+
     // TODO: Добавить возможность прерывания цикла поиска
     // TODO: Добавить возможность удаления из реестра текущих 
     //       данных пользователя
+
+    int index = LUA_REGISTRYINDEX;
+    lua_pushnil(l);
+
+    // Итерируем по таблице
+    while (lua_next(l, index) != 0) {
+        // Получаем ключ и значение
+        int key_type = lua_type(l, -2);
+        int value_type = lua_type(l, -1);
+
+        if (key_type == LUA_TSTRING && value_type == LUA_TLIGHTUSERDATA) {
+            const char *key = lua_tostring(l, -2);
+            if (koh_str_match(key, NULL, pattern) && fn) {
+                RegistryIterCtx ctx = {
+                    .key = key,
+                    .lightud = lua_touserdata(l, -1),
+                    .ud = ud,
+                    .l = l,
+                };
+                enum RegistryIter res = fn(&ctx);
+
+                switch (res) {
+                    case REGISTRY_ITER_BREAK: return;
+                    case REGISTRY_ITER_NEXT: break;
+                    case REGISTRY_ITER_REMOVE: break;
+                }
+            }
+        }
+
+        // Выводим типы ключа и значения
+        /*
+        printf("Key type: %s, Value type: %s\n",
+               lua_typename(l, key_type), lua_typename(l, value_type));
+           */
+
+        // В зависимости от типа ключа и значения, можно получить их значения
+        /*
+        if (key_type == LUA_TSTRING) {
+            printf("Key: %s\n", lua_tostring(l, -2));
+        } else if (key_type == LUA_TNUMBER) {
+            printf("Key: %f\n", lua_tonumber(l, -2));
+        }
+
+        if (value_type == LUA_TSTRING) {
+            printf("Value: %s\n", lua_tostring(l, -1));
+        } else if (value_type == LUA_TNUMBER) {
+            printf("Value: %f\n", lua_tonumber(l, -1));
+        }
+        */
+
+        // Убираем значение, оставляя ключ для следующего вызова lua_next
+        lua_pop(l, 1);
+    }
+
 }
 
 // Создает испускатель частиц(кружков)
@@ -1070,11 +1140,10 @@ static void inp_init(Input *inp) {
 
 static bool inp_circle_create(Input *inp) {
     assert(inp);
-    if (inp->active_gp != -1) {
-        return IsGamepadButtonPressed(
-            inp->active_gp, GAMEPAD_BUTTON_MIDDLE
-        );
-    } 
+    int active_gp = inp->active_gp;
+    if (inp->active_gp != -1 && 
+        IsGamepadButtonPressed(active_gp, GAMEPAD_BUTTON_MIDDLE))
+            return true;
 
     // обработка клавиатуры
     return IsKeyPressed(KEY_C);
@@ -1082,12 +1151,10 @@ static bool inp_circle_create(Input *inp) {
 
 static bool inp_left(Input *inp) {
     assert(inp);
-    if (inp->active_gp != -1) {
-        if (IsGamepadButtonDown(
-            inp->active_gp, GAMEPAD_BUTTON_RIGHT_FACE_LEFT
-        ))
+    int active_gp = inp->active_gp;
+    if (inp->active_gp != -1 && 
+        IsGamepadButtonDown(active_gp, GAMEPAD_BUTTON_RIGHT_FACE_LEFT))
             return true;
-    } 
     
     // обработка клавиатуры
     return IsKeyDown(KEY_Q);
@@ -1095,12 +1162,10 @@ static bool inp_left(Input *inp) {
 
 static bool inp_right(Input* inp) {
     assert(inp);
-    if (inp->active_gp != -1) {
-        if (IsGamepadButtonDown(
-            inp->active_gp, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT
-        )) 
+    int active_gp = inp->active_gp;
+    if (inp->active_gp != -1 && 
+        IsGamepadButtonDown(active_gp, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT)) 
             return true;
-    } 
 
     // обработка клавиатуры
     return IsKeyDown(KEY_W);
@@ -1854,6 +1919,12 @@ static void set_circles_restinition(
     }
 }
 
+static enum RegistryIter iter_sensor_free(RegistryIterCtx *ctx) {
+    trace("iter_sensor_free: key '%s'\n", ctx->key);
+
+    return REGISTRY_ITER_NEXT;
+}
+
 static void shot_gui(Stage_shot *st) {
     // {{{
     ImVec2 zero = {};
@@ -1968,6 +2039,11 @@ static void shot_gui(Stage_shot *st) {
     }
 
     //igSliderFloat("line thick", &st->line_thick, 1., 20., "%f", 0);
+
+    if (igButton("пройтись по LUA_REGISTRYINDEX", zero)) {
+        //L_registry_iter_lightud_regex(st->l, ".*", iter_sensor_free, st);
+        L_registry_iter_lightud_regex(st->l, "^ptr_.*", iter_sensor_free, st);
+    }
 
     igEnd();
     // }}}
