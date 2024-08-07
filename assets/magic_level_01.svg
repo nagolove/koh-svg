@@ -23,9 +23,9 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="1.148989"
-     inkscape:cx="299.82881"
-     inkscape:cy="668.41371"
+     inkscape:zoom="1.6249158"
+     inkscape:cx="-69.849772"
+     inkscape:cy="764.34728"
      inkscape:window-width="3840"
      inkscape:window-height="2125"
      inkscape:window-x="2560"
@@ -45,12 +45,12 @@
        sodipodi:nodetypes="cccccccssssccc" />
     <path
        style="fill:none;stroke:#000000;stroke-width:1.165"
-       d="m 116.99642,152.38644 c 0,0 23.99387,-4.79637 34.55136,-0.19336 12.00731,5.23512 14.7159,23.39373 26.58163,28.94229 8.81331,4.12121 21.29042,7.0957 29.15569,1.36891 21.19086,-15.42931 28.55772,-59.45202 31.11235,-89.535315 1.46859,-17.294186 2.20972,-30.590382 2.20972,-30.590382 L 239.815,330.44303"
+       d="m 117.5544,164.73203 c 0,0 19.70127,-9.71779 29.713,-7.63497 12.76636,2.65588 18.63234,19.51405 30.86201,24.03831 9.12488,3.37567 21.29042,7.0957 29.15569,1.36891 21.19086,-15.42931 28.55772,-59.45202 31.11235,-89.535315 1.46859,-17.294186 2.20972,-30.590382 2.20972,-30.590382 L 239.815,330.44303"
        id="path2"
        sodipodi:nodetypes="caasscc" />
     <path
-       style="font-variation-settings:normal;opacity:1;vector-effect:none;fill:none;fill-opacity:1;stroke:#000000;stroke-width:1.165;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;-inkscape-stroke:none"
-       d="m -47.77805,167.51003 251.99119,35.8519"
+       style="font-variation-settings:normal;opacity:1;vector-effect:none;fill:none;fill-opacity:1;stroke:#000000;stroke-width:0.63098;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;-inkscape-stroke:none"
+       d="m -62.120845,133.13258 123.24949,51.16048"
        id="path4" />
     <path
        style="font-variation-settings:normal;opacity:1;vector-effect:none;fill:none;fill-opacity:1;stroke:#000000;stroke-width:1.165;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;-inkscape-stroke:none"
@@ -69,8 +69,8 @@
     <ellipse
        style="fill:none;stroke:#000000;stroke-width:1.16324;-inkscape-stroke:none"
        id="path3"
-       cx="8.2737141"
-       cy="229.76485"
+       cx="-10.820603"
+       cy="216.53725"
        rx="32.938972"
        ry="35.735222" />
     <ellipse
